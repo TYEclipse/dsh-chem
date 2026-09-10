@@ -1,6 +1,6 @@
 {
   "name": "dsh-chem",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Deterministic chemistry math for DeepSeek Harness (dsh): formula parsing with molar mass (nested parens, hydrates, ionic charges), mass/mole/particle conversions, solution concentration (molarity, dilution, percent) and pH/pOH/buffer math — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
