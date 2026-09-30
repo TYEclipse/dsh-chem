@@ -6,6 +6,8 @@
  * @module dsh-chem/tools
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { balanceEquation, renderBalancedEquation } from "./balance.js";
+import { idealGas, gasDensity, molarMassFromDensity, molarVolume, } from "./gaslaw.js";
 import { AVOGADRO, bufferPh, formulaMass, parseFormula, phFromH, phFromOH, phFromPH, phFromPOH, resolveMolarMass, solutionPercent, } from "./core.js";
 function fmt(value) {
     if (!Number.isFinite(value))
@@ -68,6 +70,49 @@ function renderSolution(value) {
         lines.push(`solved: ${v.solved}`);
     if (v.c1 !== undefined && v.c2 !== undefined)
         lines.push(`dilution: ${fmt(v.c1)} M × ${fmt(v.v1)} mL = ${fmt(v.c2)} M × ${fmt(v.v2)} mL`);
+    return lines.join('\n');
+}
+function renderBalance(value) {
+    const v = value;
+    if (!v.valid)
+        return `balance_equation failed: ${v.error}`;
+    if (!v.balanced)
+        return `balance_equation: cannot balance — ${v.error}`;
+    const lines = [v.equation];
+    lines.push(v.unique === false
+        ? 'note: several independent balances exist — this is the smallest one by total coefficient sum'
+        : 'balanced (unique smallest integer solution)');
+    for (const e of v.elements) {
+        lines.push(`  ${e.symbol.padEnd(3)} left ${String(e.left).padStart(3)} = right ${String(e.right).padStart(3)}`);
+    }
+    if (v.chargeBalanced)
+        lines.push('  ionic charge is conserved as well');
+    return lines.join('\n');
+}
+function renderGasLaw(value) {
+    const v = value;
+    if (!v.valid)
+        return `gas_law failed: ${v.error}`;
+    const lines = [`operation: ${v.operation}`];
+    if (v.solved)
+        lines.push(`solved for: ${v.solved}`);
+    if (v.formula)
+        lines.push(`formula: ${v.formula}`);
+    if (v.pressureAtm !== undefined)
+        lines.push(`pressure: ${fmt(v.pressureAtm)} atm (${fmt(v.pressureKpa)} kPa, ${fmt(v.pressureMmhg)} mmHg)`);
+    if (v.volumeL !== undefined)
+        lines.push(`volume: ${fmt(v.volumeL)} L (${fmt(v.volumeMl)} mL)`);
+    if (v.moles !== undefined)
+        lines.push(`amount: ${fmt(v.moles)} mol`);
+    if (v.temperatureK !== undefined)
+        lines.push(`temperature: ${fmt(v.temperatureK)} K (${fmt(v.temperatureC)} °C)`);
+    if (v.molarVolumeLPerMol !== undefined)
+        lines.push(`molar volume: ${fmt(v.molarVolumeLPerMol)} L/mol (${fmt(v.molarVolumeMlPerMol)} mL/mol)`);
+    if (v.densityGPerL !== undefined)
+        lines.push(`density: ${fmt(v.densityGPerL)} g/L`);
+    if (v.molarMass !== undefined)
+        lines.push(`molar mass: ${fmt(v.molarMass)} g/mol`);
+    lines.push(`R = ${fmt(v.r)} L·atm/(mol·K)`);
     return lines.join('\n');
 }
 function renderPh(value) {
@@ -481,6 +526,231 @@ export function buildChemTools() {
             return { valid: false, error: `unknown operation "${op}" (expected from_h, from_oh, from_ph, from_poh or buffer)` };
         },
     });
-    return { formula_mass, mass_moles, solution, ph };
+    const balance_equation = defineTool({
+        name: 'balance_equation',
+        description: 'Balance a chemical equation and return the smallest integer coefficients '
+            + '(exact rational arithmetic — never floating point, so no 2.9999997 coefficients). '
+            + 'Write species separated by " + " and one arrow ("->", "=" or "→"), e.g. '
+            + '"C3H8 + O2 -> CO2 + H2O" or "MnO4- + Fe2+ + H+ -> Mn2+ + Fe3+ + H2O". '
+            + 'Handles nested parentheses, hydrates (CuSO4·5H2O) and ionic charges; when any species '
+            + 'carries a charge, charge conservation is enforced as an extra constraint. Per-element '
+            + 'atom counts on both sides are returned for verification. Species may be written in the '
+            + 'compact form ("Fe+O2->Fe2O3") but charged species must use the spaced form ("Na+ + Cl-") '
+            + 'because a bare "+" next to a symbol is a charge, not a separator. Use this instead of '
+            + 'eyeballing coefficients — it reports "cannot balance" rather than inventing a fake result.',
+        parameters: {
+            equation: { type: 'string', required: true, description: 'The unbalanced equation, e.g. "Fe + O2 -> Fe2O3", "C6H12O6 + O2 -> CO2 + H2O".' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    balanced: { type: 'boolean' },
+                    unique: { type: 'boolean' },
+                    equation: { type: 'string' },
+                    reactants: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                formula: { type: 'string', required: true },
+                                coefficient: { type: 'number', required: true },
+                            },
+                        },
+                    },
+                    products: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                formula: { type: 'string', required: true },
+                                coefficient: { type: 'number', required: true },
+                            },
+                        },
+                    },
+                    elements: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                symbol: { type: 'string', required: true },
+                                left: { type: 'number', required: true },
+                                right: { type: 'number', required: true },
+                            },
+                        },
+                    },
+                    chargeBalanced: { type: 'boolean' },
+                    error: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderBalance(value) }],
+        },
+        async execute(args) {
+            const result = balanceEquation(args.equation);
+            if (!result.ok) {
+                if (result.kind === 'parse')
+                    return { valid: false, error: result.error };
+                return { valid: true, balanced: false, error: result.error };
+            }
+            return {
+                valid: true,
+                balanced: true,
+                unique: result.unique,
+                equation: renderBalancedEquation(result.reactants, result.products),
+                reactants: result.reactants,
+                products: result.products,
+                elements: result.elements,
+                chargeBalanced: result.chargeBalanced,
+            };
+        },
+    });
+    const gas_law = defineTool({
+        name: 'gas_law',
+        description: 'Ideal-gas arithmetic with fixed units (pressure atm — also reported in kPa and mmHg; volume L — '
+            + 'also mL; amount mol; temperature K — also °C). Four operations: "ideal" solves PV = nRT for the one '
+            + 'quantity you leave out (give exactly three of pressureAtm, volumeL, moles, temperatureK); "molar_volume" '
+            + 'gives V/n = RT/P (defaults 0 °C, 1 atm → 22.414 L/mol); "density" gives ρ = P·M/(R·T) from a formula or a '
+            + 'given molarMass; "molar_mass" back-calculates M = ρ·R·T/P from a measured density. R = 8.31446261815324 / '
+            + '101.325 L·atm/(mol·K). Use this instead of mental PV=nRT arithmetic and unit conversions.',
+        parameters: {
+            operation: { type: 'string', required: true, enum: ['ideal', 'molar_volume', 'density', 'molar_mass'], description: 'Which gas calculation to perform.' },
+            pressureAtm: { type: 'number', description: 'Pressure in atm (must be > 0).' },
+            volumeL: { type: 'number', description: 'Volume in litres (must be > 0).' },
+            moles: { type: 'number', description: 'Amount of gas in mol (must be > 0).' },
+            temperatureK: { type: 'number', description: 'Absolute temperature in K (must be > 0); omit to solve for it in "ideal".' },
+            formula: { type: 'string', description: 'Gas formula for "density", e.g. "CO2". Takes precedence over molarMass.' },
+            molarMass: { type: 'number', description: 'Molar mass in g/mol for "density" when no formula is given.' },
+            densityGPerL: { type: 'number', description: 'Measured gas density in g/L for the "molar_mass" operation.' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    operation: { type: 'string' },
+                    solved: { type: 'string' },
+                    pressureAtm: { type: 'number' },
+                    pressureKpa: { type: 'number' },
+                    pressureMmhg: { type: 'number' },
+                    volumeL: { type: 'number' },
+                    volumeMl: { type: 'number' },
+                    moles: { type: 'number' },
+                    temperatureK: { type: 'number' },
+                    temperatureC: { type: 'number' },
+                    molarVolumeLPerMol: { type: 'number' },
+                    molarVolumeMlPerMol: { type: 'number' },
+                    densityGPerL: { type: 'number' },
+                    densityGPerMl: { type: 'number' },
+                    molarMass: { type: 'number' },
+                    formula: { type: 'string' },
+                    r: { type: 'number' },
+                    error: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderGasLaw(value) }],
+        },
+        async execute(args) {
+            const op = args.operation;
+            if (op === 'ideal') {
+                const solved = idealGas({
+                    pressureAtm: args.pressureAtm,
+                    volumeL: args.volumeL,
+                    moles: args.moles,
+                    temperatureK: args.temperatureK,
+                });
+                if (!solved.ok)
+                    return { valid: false, operation: op, error: solved.error };
+                return {
+                    valid: true,
+                    operation: op,
+                    solved: solved.solved,
+                    pressureAtm: solved.pressureAtm,
+                    pressureKpa: solved.pressureKpa,
+                    pressureMmhg: solved.pressureMmhg,
+                    volumeL: solved.volumeL,
+                    volumeMl: solved.volumeMl,
+                    moles: solved.moles,
+                    temperatureK: solved.temperatureK,
+                    temperatureC: solved.temperatureC,
+                    r: solved.r,
+                };
+            }
+            if (op === 'molar_volume') {
+                const solved = molarVolume(args.temperatureK ?? 273.15, args.pressureAtm ?? 1);
+                if (!solved.ok)
+                    return { valid: false, operation: op, error: solved.error };
+                return {
+                    valid: true,
+                    operation: op,
+                    pressureAtm: solved.pressureAtm,
+                    pressureKpa: solved.pressureKpa,
+                    temperatureK: solved.temperatureK,
+                    temperatureC: solved.temperatureC,
+                    molarVolumeLPerMol: solved.molarVolumeLPerMol,
+                    molarVolumeMlPerMol: solved.molarVolumeMlPerMol,
+                    r: solved.r,
+                };
+            }
+            if (op === 'density') {
+                const mass = resolveMolarMass(args.formula, args.molarMass);
+                if (mass.error !== null)
+                    return { valid: false, operation: op, error: mass.error };
+                if (args.pressureAtm === undefined)
+                    return { valid: false, operation: op, error: 'operation "density" requires pressureAtm' };
+                if (args.temperatureK === undefined)
+                    return { valid: false, operation: op, error: 'operation "density" requires temperatureK' };
+                const solved = gasDensity(args.pressureAtm, mass.mass, args.temperatureK);
+                if (!solved.ok)
+                    return { valid: false, operation: op, error: solved.error };
+                const out = {
+                    valid: true,
+                    operation: op,
+                    pressureAtm: solved.pressureAtm,
+                    temperatureK: solved.temperatureK,
+                    temperatureC: solved.temperatureC,
+                    molarMass: solved.molarMass,
+                    densityGPerL: solved.densityGPerL,
+                    densityGPerMl: solved.densityGPerMl,
+                    r: solved.r,
+                };
+                if (mass.formula !== null)
+                    out.formula = mass.formula;
+                return out;
+            }
+            if (op === 'molar_mass') {
+                if (args.densityGPerL === undefined)
+                    return { valid: false, operation: op, error: 'operation "molar_mass" requires densityGPerL' };
+                if (args.pressureAtm === undefined)
+                    return { valid: false, operation: op, error: 'operation "molar_mass" requires pressureAtm' };
+                if (args.temperatureK === undefined)
+                    return { valid: false, operation: op, error: 'operation "molar_mass" requires temperatureK' };
+                const solved = molarMassFromDensity(args.densityGPerL, args.pressureAtm, args.temperatureK);
+                if (!solved.ok)
+                    return { valid: false, operation: op, error: solved.error };
+                const out = {
+                    valid: true,
+                    operation: op,
+                    pressureAtm: solved.pressureAtm,
+                    temperatureK: solved.temperatureK,
+                    temperatureC: solved.temperatureC,
+                    densityGPerL: solved.densityGPerL,
+                    molarMass: solved.molarMass,
+                    r: solved.r,
+                };
+                const mass = resolveMolarMass(args.formula, undefined);
+                if (args.formula !== undefined && mass.formula !== null)
+                    out.formula = mass.formula;
+                return out;
+            }
+            return { valid: false, error: `unknown operation "${op}" (expected ideal, molar_volume, density or molar_mass)` };
+        },
+    });
+    return { formula_mass, mass_moles, solution, ph, balance_equation, gas_law };
 }
 //# sourceMappingURL=tools.js.map

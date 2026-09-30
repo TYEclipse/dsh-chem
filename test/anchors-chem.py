@@ -18,7 +18,9 @@ Cross-validation: anchors must match publicly published textbook values
 (H2O 18.015, H2SO4 98.08, NaCl 58.44, Ca(OH)2 74.09, CuSO4*5H2O 249.68,
 C6H12O6 180.16, KMnO4 158.03, NH3 17.03).
 """
+import itertools
 import math, re
+from fractions import Fraction
 
 ATOMIC = {
     'H': 1.008, 'He': 4.0026, 'Li': 6.94, 'Be': 9.0122, 'B': 10.81, 'C': 12.011,
@@ -223,3 +225,253 @@ print(f'ph_from_poh_2_oh\t{math.pow(10, -2):.6e}')
 print(f'buffer_4.76_0.1_0.2\t{4.76 + math.log10(0.1 / 0.2):.12f}')
 print(f'buffer_9.25_0.05_0.05\t{9.25 + math.log10(0.05 / 0.05):.12f}')
 print(f'buffer_textbook_check\t{4.76 + math.log10(0.1 / 0.2):.4f} (expect ~4.46)')
+
+# ---------------------------------------------------------------------------
+# balance_equation anchors (independent Fraction-based nullspace solver)
+#
+# Independent implementation: Python's fractions.Fraction + own species
+# tokenizer + own RREF. Deterministic selection rule for the multi-solution
+# case: among all strictly positive integer solutions reachable from the
+# nullspace basis with small integer combinations, take the SMALLEST TOTAL SUM
+# (ties broken by enumeration order = lexicographic in the basis coefficients).
+print()
+print('# --- balance_equation anchors (Fraction nullspace) ---')
+
+def _is_sep(text, i):
+    prev = text[i - 1] if i > 0 else None
+    nxt = text[i + 1] if i + 1 < len(text) else None
+    if prev is None or nxt is None:
+        return False
+    if prev.isspace() or nxt.isspace():
+        return prev.isspace() and nxt.isspace()
+    return (prev.isalnum() or prev == ')') and (nxt.isupper() or nxt == '(')
+
+
+def _split_species(side):
+    text = side.strip()
+    if not text:
+        raise ValueError('one side of the arrow is empty')
+    parts, cur = [], ''
+    for i, ch in enumerate(text):
+        if ch == '+' and _is_sep(text, i):
+            parts.append(cur)
+            cur = ''
+        else:
+            cur += ch
+    parts.append(cur)
+    out = []
+    for raw in parts:
+        token = re.sub(r'^\d+', '', raw.strip())
+        if not token:
+            raise ValueError(f'empty species near {raw!r}')
+        out.append(token)
+    return out
+
+
+def _charge_of(charge):
+    if not charge:
+        return 0
+    sign = -1 if charge.endswith('-') else 1
+    mag = charge[:-1]
+    return sign * (int(mag) if mag else 1)
+
+
+def _rref(matrix, ncols):
+    rows = [[Fraction(x) for x in row] for row in matrix]
+    pivots, r = [], 0
+    for c in range(ncols):
+        if r >= len(rows):
+            break
+        pick = next((i for i in range(r, len(rows)) if rows[i][c] != 0), None)
+        if pick is None:
+            continue
+        rows[r], rows[pick] = rows[pick], rows[r]
+        pivot = rows[r][c]
+        rows[r] = [v / pivot for v in rows[r]]
+        for i in range(len(rows)):
+            if i == r:
+                continue
+            factor = rows[i][c]
+            if factor == 0:
+                continue
+            rows[i] = [a - factor * b for a, b in zip(rows[i], rows[r])]
+        pivots.append(c)
+        r += 1
+    return rows[:len(pivots)], pivots
+
+
+def _nullspace(matrix, ncols):
+    rows, pivots = _rref(matrix, ncols)
+    basis = []
+    for free in [c for c in range(ncols) if c not in pivots]:
+        vec = [Fraction(0)] * ncols
+        vec[free] = Fraction(1)
+        for i, row in enumerate(rows):
+            vec[pivots[i]] = -row[free]
+        basis.append(vec)
+    return basis
+
+
+def _integers(vec):
+    lcm = 1
+    for x in vec:
+        lcm = lcm * x.denominator // math.gcd(lcm, x.denominator)
+    ints = [int(x * lcm) for x in vec]
+    g = 0
+    for v in ints:
+        g = math.gcd(g, abs(v))
+    if g:
+        ints = [v // g for v in ints]
+    first = next((v for v in ints if v != 0), 0)
+    if first < 0:
+        ints = [-v for v in ints]
+    return ints
+
+
+ARROW_RE_PY = re.compile(r'-{1,2}>|→|⇌|=>|==>|=')
+MAX_COEFF = 1_000_000
+
+
+def balance_equation(eq):
+    """Return (kind, coefficients, unique, elements) for a chemical equation."""
+    found = ARROW_RE_PY.findall(eq)
+    if len(found) != 1:
+        raise ValueError(f'expected exactly one arrow, found {len(found)}')
+    at = ARROW_RE_PY.search(eq)
+    left = _split_species(eq[:at.start()])
+    right = _split_species(eq[at.end():])
+    species = []
+    for token in left:
+        _m, total, _h, charge, _c = parse_formula(token)
+        species.append((total, _charge_of(charge)))
+    order = len(left)
+    for token in right:
+        _m, total, _h, charge, _c = parse_formula(token)
+        species.append((total, _charge_of(charge)))
+    ncols = len(species)
+    if ncols < 2:
+        raise ValueError('need at least two species')
+    elements = []
+    for total, _c in species:
+        for k in total:
+            if k not in elements:
+                elements.append(k)
+    matrix = []
+    for el in elements:
+        matrix.append([Fraction(total.get(el, 0)) * (1 if i < order else -1)
+                       for i, (total, _c) in enumerate(species)])
+    if any(c for _t, c in species):
+        matrix.append([Fraction(c) * (1 if i < order else -1) for i, (_t, c) in enumerate(species)])
+    basis = _nullspace(matrix, ncols)
+    if not basis:
+        return ('inconsistent', [], True, elements)
+    if len(basis) == 1:
+        coeffs, unique = _integers(basis[0]), True
+    else:
+        unique, coeffs, best_sum = False, None, None
+        radius = 6
+        for combo in itertools.product(range(-radius, radius + 1), repeat=len(basis)):
+            if all(k == 0 for k in combo):
+                continue
+            acc = [Fraction(0)] * ncols
+            for k, base in zip(combo, basis):
+                acc = [a + k * b for a, b in zip(acc, base)]
+            ints = _integers(acc)
+            if all(0 < v <= MAX_COEFF for v in ints):
+                total_sum = sum(ints)
+                if best_sum is None or total_sum < best_sum:
+                    best_sum, coeffs = total_sum, ints
+    if coeffs is None or not all(v > 0 for v in coeffs):
+        return ('no-positive', [], unique, elements)
+    # Verify conservation from the returned coefficients (independent recount).
+    for index, el in enumerate(elements):
+        lhs = sum(coeffs[i] * species[i][0].get(el, 0) for i in range(order))
+        rhs = sum(coeffs[i] * species[i][0].get(el, 0) for i in range(order, ncols))
+        if lhs != rhs:
+            raise AssertionError(f'{eq}: {el} not conserved ({lhs} != {rhs})')
+    if any(c for _t, c in species):
+        lhs = sum(coeffs[i] * species[i][1] for i in range(order))
+        rhs = sum(coeffs[i] * species[i][1] for i in range(order, ncols))
+        if lhs != rhs:
+            raise AssertionError(f'{eq}: charge not conserved ({lhs} != {rhs})')
+    return ('ok', coeffs, unique, elements)
+
+
+BALANCE_CASES = [
+    # textbook anchors (published coefficients)
+    'C3H8 + O2 -> CO2 + H2O',            # 1 5 3 4
+    'Fe + O2 -> Fe2O3',                  # 4 3 2
+    'KClO3 -> KCl + O2',                 # 2 2 3
+    'Fe2O3 + CO -> Fe + CO2',            # 1 3 2 3
+    'Al + HCl -> AlCl3 + H2',            # 2 6 2 3
+    'C6H12O6 + O2 -> CO2 + H2O',         # 1 6 6 6
+    'Mg(OH)2 + H3PO4 -> Mg3(PO4)2 + H2O',  # 3 2 1 6
+    'Cu + HNO3 -> Cu(NO3)2 + NO2 + H2O',   # 1 4 1 2 2
+    'Ca(OH)2 + H3PO4 -> Ca3(PO4)2 + H2O',  # 3 2 1 6
+    'NH3 + O2 -> NO + H2O',              # 4 5 4 6
+    'CH4 + O2 -> CO2 + H2O',             # 1 2 1 2
+    'Fe + HCl -> FeCl2 + H2',            # 1 2 1 1
+    'NaHCO3 -> Na2CO3 + H2O + CO2',      # 2 1 1 1
+    'KMnO4 + HCl -> KCl + MnCl2 + Cl2 + H2O',   # 2 16 2 2 5 8
+    # compact separator form and ignored leading coefficients
+    '2H2 + O2 -> 2H2O',
+    'Fe+O2->Fe2O3',
+    # ionic / redox (charge row active)
+    'Fe2+ + Ce4+ -> Fe3+ + Ce3+',
+    'MnO4- + Fe2+ + H+ -> Mn2+ + Fe3+ + H2O',   # 1 5 8 1 5 4
+    'Na+ + Cl- -> NaCl',
+    # hydration water participates in the balance
+    'CuSO4·5H2O -> CuSO4 + H2O',          # 1 1 5
+    'H2 + O2 -> H2O',                     # 2 1 2
+]
+for case in BALANCE_CASES:
+    try:
+        kind, coeffs, unique, elements = balance_equation(case)
+        joined = ','.join(str(c) for c in coeffs)
+        print(f'balance\t{case}\t{kind}\t{joined}\tunique={unique}\telements={len(elements)}')
+    except (ValueError, AssertionError) as exc:
+        print(f'balance\t{case}\tERROR\t{exc}')
+
+print('# --- balance: multi-solution and impossible cases (properties only) ---')
+for case in ['Fe + O2 -> Fe2O3 + Fe3O4', 'H2 + O2 -> H2O + N2', 'Na + Cl2 -> NaCl + KCl']:
+    try:
+        kind, coeffs, unique, _elements = balance_equation(case)
+        print(f'balance-edge\t{case}\t{kind}\tsum={sum(coeffs)}\tunique={unique}\t{",".join(str(c) for c in coeffs)}')
+    except (ValueError, AssertionError) as exc:
+        print(f'balance-edge\t{case}\tERROR\t{exc}')
+
+# ---------------------------------------------------------------------------
+# gas_law anchors (ideal gas law, own constant derivation)
+print()
+print('# --- gas_law anchors ---')
+GAS_R_J = 8.31446261815324
+GAS_ATM_KPA = 101.325
+GAS_R = GAS_R_J / GAS_ATM_KPA
+print(f'R_atm_l\t{GAS_R!r}')
+print(f'R_from_joules\t{(GAS_R_J / GAS_ATM_KPA)!r}')
+print(f'R_published_check\t{GAS_R:.5f} (published 0.08206)')
+print(f'molar_volume_stp_273.15K_1atm\t{(GAS_R * 273.15 / 1)!r}')
+print(f'molar_volume_published_check\t{(GAS_R * 273.15):.3f} (published 22.414)')
+print(f'molar_volume_298.15K_1atm\t{(GAS_R * 298.15 / 1)!r}')
+print(f'molar_volume_273.15K_2atm\t{(GAS_R * 273.15 / 2)!r}')
+# ideal-gas solves: (P,V,n,T) with one missing
+print(f'ideal_pressure_n1_T273.15_V22.4\t{((1 * GAS_R) * 273.15) / 22.4!r}')
+print(f'ideal_volume_n2_T300_P1.5\t{((2 * GAS_R) * 300) / 1.5!r}')
+print(f'ideal_moles_P1_V1_T298.15\t{(1 * 1) / (GAS_R * 298.15)!r}')
+print(f'ideal_temperature_P2_V10_n1\t{(2 * 10) / (1 * GAS_R)!r}')
+print(f'ideal_pressure_kpa_n1_T273.15_V22.4\t{(((1 * GAS_R) * 273.15) / 22.4) * GAS_ATM_KPA!r}')
+print(f'ideal_volume_ml_n2_T300_P1.5\t{(((2 * GAS_R) * 300) / 1.5) * 1000!r}')
+print(f'ideal_temperature_c_P2_V10_n1\t{((2 * 10) / (1 * GAS_R)) - 273.15!r}')
+# density / molar mass from density
+CO2_MASS = parse_formula('CO2')[0]
+N2_MASS = parse_formula('N2')[0]
+print(f'co2_molar_mass\t{CO2_MASS!r}')
+print(f'n2_molar_mass\t{N2_MASS!r}')
+print(f'density_CO2_1atm_273.15K\t{(1 * CO2_MASS) / (GAS_R * 273.15)!r}')
+print(f'density_N2_1atm_298.15K\t{(1 * N2_MASS) / (GAS_R * 298.15)!r}')
+print(f'density_CO2_2atm_300K\t{(2 * CO2_MASS) / (GAS_R * 300)!r}')
+print(f'density_CO2_g_per_ml_1atm_273.15K\t{((1 * CO2_MASS) / (GAS_R * 273.15)) / 1000!r}')
+print(f'molar_mass_from_density_1.96_1atm_273.15K\t{(1.96 * GAS_R * 273.15) / 1!r}')
+print(f'molar_mass_from_density_1.2506_1atm_273.15K\t{(1.2506 * GAS_R * 273.15) / 1!r}')
+print(f'molar_mass_from_density_1.15_1.5atm_300K\t{(1.15 * GAS_R * 300) / 1.5!r}')
+print(f'density_published_check_CO2\t{((1 * CO2_MASS) / (GAS_R * 273.15)):.4f} (published 1.96 g/L)')

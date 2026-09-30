@@ -11,6 +11,8 @@ export interface ToolSet {
     mass_moles: ToolDefinition;
     solution: ToolDefinition;
     ph: ToolDefinition;
+    balance_equation: ToolDefinition;
+    gas_law: ToolDefinition;
 }
 export interface FormulaMassResult {
     valid: boolean;
@@ -70,6 +72,49 @@ export interface PhResultOut {
     ohConc?: number;
     bufferRatio?: number;
     pKa?: number;
+    error?: string;
+}
+export interface BalanceTermOut {
+    formula: string;
+    coefficient: number;
+}
+export interface BalanceEquationResult {
+    valid: boolean;
+    /** false when the species cannot balance at all (valid stays true: the input was understood). */
+    balanced?: boolean;
+    /** false when several independent balances exist; the smallest one is returned. */
+    unique?: boolean;
+    equation?: string;
+    reactants?: BalanceTermOut[];
+    products?: BalanceTermOut[];
+    elements?: {
+        symbol: string;
+        left: number;
+        right: number;
+    }[];
+    /** true when at least one species carried a charge (charge conservation checked too). */
+    chargeBalanced?: boolean;
+    error?: string;
+}
+export interface GasLawResult {
+    valid: boolean;
+    operation?: string;
+    solved?: string;
+    pressureAtm?: number;
+    pressureKpa?: number;
+    pressureMmhg?: number;
+    volumeL?: number;
+    volumeMl?: number;
+    moles?: number;
+    temperatureK?: number;
+    temperatureC?: number;
+    molarVolumeLPerMol?: number;
+    molarVolumeMlPerMol?: number;
+    densityGPerL?: number;
+    densityGPerMl?: number;
+    molarMass?: number;
+    formula?: string;
+    r?: number;
     error?: string;
 }
 export declare function buildChemTools(): ToolSet;
