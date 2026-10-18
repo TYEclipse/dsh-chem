@@ -2,6 +2,10 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-chem`
 
+## [0.3.0] — 2026-10-19
+### Minor · R73
+- [自主进化] R73 新增 stoichiometry（限量试剂/反应进度/理论产率与剩余量）+ oracle 加 --check 自检 + 无损 JSON 助手统一
+
 ## [0.2.0] — 2026-10-01
 ### Minor · R55
 - [自主进化] R55 新增 balance_equation（精确配平，含电荷守恒/结晶水/多解判定）与 gas_law（PV=nRT 四解/摩尔体积/气体密度/密度反推摩尔质量）

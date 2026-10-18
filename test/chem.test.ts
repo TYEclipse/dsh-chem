@@ -6,7 +6,7 @@
  *
  * ORACLE: test/anchors-chem.py
  *
- * Discipline: every result object is checked with assertNoUndefined (lossless
+ * Discipline: every result object is checked with assertLossless (lossless
  * JSON gate), and argument helpers only assign keys that are present.
  *
  * @module dsh-chem/test
@@ -15,24 +15,11 @@
 import { describe, expect, it } from 'vitest'
 import { buildChemTools } from '../src/tools.ts'
 import { parseFormula, formulaMass, AVOGADRO } from '../src/core.ts'
+import { assertLossless } from './helpers/lossless-json.ts'
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-/** Recursive lossless-JSON discipline check: no key may hold undefined. */
-function assertNoUndefined(value: unknown, path = 'root'): void {
-  if (value === undefined) {
-    throw new Error(`undefined live key at ${path}`)
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoUndefined(item, `${path}[${index}]`))
-  } else if (value !== null && typeof value === 'object') {
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      assertNoUndefined(item, `${path}.${key}`)
-    }
-  }
-}
 
 const tools = buildChemTools()
 
@@ -225,7 +212,7 @@ describe('formula parser (core)', () => {
 describe('formula_mass tool', () => {
   it('computes H2SO4 molar mass with breakdown', async () => {
     const result = await executeFormulaMass({ formula: 'H2SO4' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(relErr(result.molarMass as number, 98.072)).toBeLessThan(1e-9)
     expect((result.elements as Array<{ symbol: string }>).map((e) => e.symbol).join('')).toBe('HOS')
@@ -235,7 +222,7 @@ describe('formula_mass tool', () => {
 
   it('returns valid:false with error for a bad formula', async () => {
     const result = await executeFormulaMass({ formula: 'Fe3+Cl' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(false)
     expect(typeof result.error).toBe('string')
     expect(result.molarMass).toBeUndefined()
@@ -243,7 +230,7 @@ describe('formula_mass tool', () => {
 
   it('keeps charge but not coefficient undefined keys out of the result', async () => {
     const result = await executeFormulaMass({ formula: 'H2O' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect('charge' in result).toBe(false)
     expect('coefficient' in result).toBe(false)
@@ -258,7 +245,7 @@ describe('formula_mass tool', () => {
 describe('mass_moles tool', () => {
   it('mass_to_moles: 98 g H2SO4 = 0.999265845501 mol', async () => {
     const result = await executeMassMoles({ mode: 'mass_to_moles', value: 98, formula: 'H2SO4' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(relErr(result.moles as number, 0.999265845501)).toBeLessThan(1e-9)
     expect(relErr(result.molarMass as number, 98.072)).toBeLessThan(1e-9)
@@ -268,50 +255,50 @@ describe('mass_moles tool', () => {
 
   it('moles_to_mass: 0.5 mol H2SO4 = 49.036 g', async () => {
     const result = await executeMassMoles({ mode: 'moles_to_mass', value: 0.5, formula: 'H2SO4' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(relErr(result.massG as number, 49.036)).toBeLessThan(1e-9)
   })
 
   it('mass_to_particles: 10 g NaCl = 1.030483e23 particles', async () => {
     const result = await executeMassMoles({ mode: 'mass_to_particles', value: 10, formula: 'NaCl' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(relErr(result.particles as number, 1.030483e23)).toBeLessThan(1e-6)
   })
 
   it('particles_to_mass: 1e24 water molecules = 29.914611295 g', async () => {
     const result = await executeMassMoles({ mode: 'particles_to_mass', value: 1e24, formula: 'H2O' })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(relErr(result.massG as number, 29.914611295)).toBeLessThan(1e-9)
   })
 
   it('moles_to_particles: 2.5 mol = 1.505535e24', async () => {
     const result = await executeMassMoles({ mode: 'moles_to_particles', value: 2.5 })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(relErr(result.particles as number, 1.505535e24)).toBeLessThan(1e-6)
   })
 
   it('particles_to_moles: 1.5e23 = 0.249080860076 mol', async () => {
     const result = await executeMassMoles({ mode: 'particles_to_moles', value: 1.5e23 })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(relErr(result.moles as number, 0.249080860076)).toBeLessThan(1e-9)
   })
 
   it('accepts explicit molarMass instead of formula', async () => {
     const result = await executeMassMoles({ mode: 'mass_to_moles', value: 36.03, molarMass: 18.015 })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.moles).toBeCloseTo(2.0, 9)
     expect('formula' in result).toBe(false)
   })
 
   it('errors without molar mass for mass modes', async () => {
     const result = await executeMassMoles({ mode: 'mass_to_moles', value: 10 })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(false)
   })
 
   it('errors on non-positive value', async () => {
     const result = await executeMassMoles({ mode: 'moles_to_particles', value: -1 })
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(false)
   })
 
@@ -327,7 +314,7 @@ describe('mass_moles tool', () => {
 describe('solution tool', () => {
   it('molarity: 58.44 g NaCl in 250 mL = 4.0 M', async () => {
     const result = await executeSolution(pick({ operation: 'molarity', massG: 58.44, volumeMl: 250, formula: 'NaCl' }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.molarity).toBeCloseTo(4.0, 9)
     expect(result.molarMass).toBeCloseTo(58.44, 9)
@@ -335,7 +322,7 @@ describe('solution tool', () => {
 
   it('prepare: 0.1 M NaOH, 500 mL -> 1.99985 g', async () => {
     const result = await executeSolution(pick({ operation: 'prepare', molarity: 0.1, volumeMl: 500, formula: 'NaOH' }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.massG).toBeCloseTo(1.99985, 9)
     expect('percent' in result).toBe(false)
@@ -343,7 +330,7 @@ describe('solution tool', () => {
 
   it('dilute: solves missing v1 (2 M -> 0.5 M, v2 = 250 mL -> 62.5 mL)', async () => {
     const result = await executeSolution(pick({ operation: 'dilute', c1: 2, c2: 0.5, v2: 250 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.v1).toBeCloseTo(62.5, 9)
     expect(result.solved).toBe('v1')
@@ -351,21 +338,21 @@ describe('solution tool', () => {
 
   it('dilute: solves missing c2 (2 M, 100 mL -> 500 mL -> 0.4 M)', async () => {
     const result = await executeSolution(pick({ operation: 'dilute', c1: 2, v1: 100, v2: 500 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.c2).toBeCloseTo(0.4, 9)
     expect(result.solved).toBe('c2')
   })
 
   it('dilute: solves missing v2 (2 M, 100 mL -> 0.5 M -> 400 mL)', async () => {
     const result = await executeSolution(pick({ operation: 'dilute', c1: 2, v1: 100, c2: 0.5 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.v2).toBeCloseTo(400, 9)
     expect(result.solved).toBe('v2')
   })
 
   it('dilute: solves missing c1 (0.5 M, 250 mL from 10 mL -> 12.5 M)', async () => {
     const result = await executeSolution(pick({ operation: 'dilute', v1: 10, c2: 0.5, v2: 250 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.c1).toBeCloseTo(12.5, 9)
     expect(result.solved).toBe('c1')
   })
@@ -384,20 +371,20 @@ describe('solution tool', () => {
 
   it('percent w/v: 5 g in 200 mL = 2.5 %', async () => {
     const result = await executeSolution(pick({ operation: 'percent', percentType: 'wv', soluteG: 5, solutionMl: 200 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.percent).toBeCloseTo(2.5, 9)
   })
 
   it('percent v/v: 30 mL in 1000 mL = 3 %', async () => {
     const result = await executeSolution(pick({ operation: 'percent', percentType: 'vv', soluteMl: 30, totalMl: 1000 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.percent).toBeCloseTo(3.0, 9)
   })
 
   it('percent mass: 2.5 g in 100 g = 2.5 %', async () => {
     const result = await executeSolution(pick({ operation: 'percent', percentType: 'mass', soluteMassG: 2.5, totalMassG: 100 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.percent).toBeCloseTo(2.5, 9)
   })
 
@@ -418,7 +405,7 @@ describe('solution tool', () => {
 describe('ph tool', () => {
   it('from_h: [H+] = 1e-7 -> pH 7, pOH 7', async () => {
     const result = await executePh(pick({ operation: 'from_h', hConc: 1e-7 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.pH).toBeCloseTo(7.0, 9)
     expect(result.pOH).toBeCloseTo(7.0, 9)
@@ -428,21 +415,21 @@ describe('ph tool', () => {
 
   it('from_h: [H+] = 0.01 -> pH 2', async () => {
     const result = await executePh(pick({ operation: 'from_h', hConc: 0.01 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.pH).toBeCloseTo(2.0, 9)
     expect(result.ohConc).toBeCloseTo(1e-12, 12)
   })
 
   it('from_oh: [OH-] = 1e-4 -> pH 10', async () => {
     const result = await executePh(pick({ operation: 'from_oh', ohConc: 1e-4 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.pH).toBeCloseTo(10.0, 9)
     expect(result.hConc).toBeCloseTo(1e-10, 12)
   })
 
   it('from_ph: pH 3 -> [H+] = 1e-3, pOH 11', async () => {
     const result = await executePh(pick({ operation: 'from_ph', pH: 3 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.hConc).toBeCloseTo(1e-3, 12)
     expect(result.pOH).toBeCloseTo(11.0, 9)
     expect(result.ohConc).toBeCloseTo(1e-11, 12)
@@ -450,14 +437,14 @@ describe('ph tool', () => {
 
   it('from_poh: pOH 2 -> [OH-] = 1e-2, pH 12', async () => {
     const result = await executePh(pick({ operation: 'from_poh', pOH: 2 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.ohConc).toBeCloseTo(1e-2, 12)
     expect(result.pH).toBeCloseTo(12.0, 9)
   })
 
   it('buffer: pKa 4.76, [A-]=0.1, [HA]=0.2 -> pH 4.458970004336 (textbook ~4.46)', async () => {
     const result = await executePh(pick({ operation: 'buffer', pKa: 4.76, acidConc: 0.2, baseConc: 0.1 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(relErr(result.pH as number, 4.458970004336)).toBeLessThan(1e-9)
     expect(result.bufferRatio).toBeCloseTo(0.5, 9)
@@ -466,7 +453,7 @@ describe('ph tool', () => {
 
   it('buffer: equal concentrations -> pH = pKa (9.25)', async () => {
     const result = await executePh(pick({ operation: 'buffer', pKa: 9.25, acidConc: 0.05, baseConc: 0.05 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.pH).toBeCloseTo(9.25, 9)
     expect(result.bufferRatio).toBeCloseTo(1.0, 9)
   })
@@ -488,7 +475,7 @@ describe('ph tool', () => {
 
   it('accepts negative pH for >1 M acid ([H+]=2 -> -0.301)', async () => {
     const result = await executePh(pick({ operation: 'from_h', hConc: 2 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.pH).toBeCloseTo(-Math.log10(2), 9)
   })
@@ -568,7 +555,7 @@ describe('balance_equation', () => {
   for (const anchor of BALANCE_ANCHORS) {
     it(`balances ${anchor.equation}`, async () => {
       const result = (await executeBalance({ equation: anchor.equation })) as unknown as BalancePayload
-      assertNoUndefined(result)
+      assertLossless(result)
       expect(result.valid).toBe(true)
       expect(result.balanced).toBe(true)
       expect(result.unique).toBe(true)
@@ -610,7 +597,7 @@ describe('balance_equation', () => {
   it('returns the smallest balance and warns when several independent ones exist', async () => {
     // Oracle: three independent balances; smallest total coefficient sum = 15.
     const result = (await executeBalance({ equation: 'Fe + O2 -> Fe2O3 + Fe3O4' })) as unknown as BalancePayload
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.balanced).toBe(true)
     expect(result.unique).toBe(false)
@@ -621,7 +608,7 @@ describe('balance_equation', () => {
   it('reports "cannot balance" instead of inventing coefficients', async () => {
     for (const equation of ['H2 + O2 -> H2O + N2', 'Na + Cl2 -> NaCl + KCl']) {
       const result = (await executeBalance({ equation })) as unknown as BalancePayload
-      assertNoUndefined(result)
+      assertLossless(result)
       expect(result.valid).toBe(true)
       expect(result.balanced).toBe(false)
       expect(String(result.error)).toContain('coefficient 0')
@@ -656,7 +643,7 @@ describe('balance_equation', () => {
 describe('gas_law', () => {
   it('molar_volume: 22.414 L/mol at STP and scales with T and P', async () => {
     const stp = await executeGasLaw(pick({ operation: 'molar_volume' }))
-    assertNoUndefined(stp)
+    assertLossless(stp)
     expect(stp.valid).toBe(true)
     expect(stp.molarVolumeLPerMol as number).toBeCloseTo(22.413969545014133, 10)
     expect(stp.molarVolumeMlPerMol as number).toBeCloseTo((stp.molarVolumeLPerMol as number) * 1000, 8)
@@ -673,7 +660,7 @@ describe('gas_law', () => {
 
   it('ideal: solves for pressure when n, T and V are given', async () => {
     const result = await executeGasLaw(pick({ operation: 'ideal', moles: 1, temperatureK: 273.15, volumeL: 22.4 }))
-    assertNoUndefined(result)
+    assertLossless(result)
     expect(result.valid).toBe(true)
     expect(result.solved).toBe('pressure')
     expect(result.pressureAtm as number).toBeCloseTo(1.0006236404024167, 10)
@@ -712,7 +699,7 @@ describe('gas_law', () => {
 
   it('density: ideal-gas density from a formula or a given molar mass', async () => {
     const co2 = await executeGasLaw(pick({ operation: 'density', formula: 'CO2', pressureAtm: 1, temperatureK: 273.15 }))
-    assertNoUndefined(co2)
+    assertLossless(co2)
     expect(co2.valid).toBe(true)
     expect(co2.molarMass as number).toBeCloseTo(44.009, 9)
     expect(co2.densityGPerL as number).toBeCloseTo(1.9634630051413435, 10)
@@ -729,7 +716,7 @@ describe('gas_law', () => {
 
   it('molar_mass: back-calculates M from a measured density', async () => {
     const heavy = await executeGasLaw(pick({ operation: 'molar_mass', densityGPerL: 1.96, pressureAtm: 1, temperatureK: 273.15 }))
-    assertNoUndefined(heavy)
+    assertLossless(heavy)
     expect(heavy.valid).toBe(true)
     expect(heavy.molarMass as number).toBeCloseTo(43.9313803082277, 10)
     const light = await executeGasLaw(pick({ operation: 'molar_mass', densityGPerL: 1.2506, pressureAtm: 1, temperatureK: 273.15 }))
@@ -755,5 +742,253 @@ describe('gas_law', () => {
 
   it('rejects unknown operation at the schema layer (enum)', async () => {
     await expect(executeGasLaw(pick({ operation: 'triple_point' }))).rejects.toThrow()
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* stoichiometry (numeric anchors: python oracle stoich.* rows)        */
+/* ------------------------------------------------------------------ */
+describe('stoichiometry', () => {
+  const executeStoich = tools.stoichiometry.execute as (args: {
+    equation: string
+    reactants: { formula: string, moles?: number, grams?: number }[]
+    product?: string
+    actualYieldG?: number
+  }) => Promise<Record<string, unknown>>
+
+  type Row = Record<string, number | string | boolean>
+  const rows = (value: unknown): Row[] => value as Row[]
+  const rowFor = (list: unknown, formula: string): Row => {
+    const found = rows(list).find((r) => r.formula === formula)
+    if (!found) throw new Error(`row ${formula} missing from ${JSON.stringify(list)}`)
+    return found
+  }
+
+  it('propane at the exact stoichiometric ratio: both reactants limiting, nothing left over', async () => {
+    const result = await executeStoich({
+      equation: 'C3H8 + O2 -> CO2 + H2O',
+      reactants: [{ formula: 'C3H8', moles: 1 }, { formula: 'O2', moles: 5 }],
+    })
+    assertLossless(result)
+    expect(result.valid).toBe(true)
+    expect(result.equation).toBe('C3H8 + 5O2 -> 3CO2 + 4H2O')
+    expect(result.extent).toBeCloseTo(1, 12)
+    expect(result.limiting).toEqual(['C3H8', 'O2'])
+    expect(rowFor(result.reactants, 'C3H8').availableGrams).toBeCloseTo(44.097, 6)
+    expect(rowFor(result.reactants, 'C3H8').leftoverMoles).toBe(0)
+    expect(rowFor(result.reactants, 'O2').leftoverMoles).toBe(0)
+    expect(rowFor(result.products, 'CO2').moles).toBeCloseTo(3, 12)
+    expect(rowFor(result.products, 'CO2').grams).toBeCloseTo(132.027, 6)
+    expect(rowFor(result.products, 'H2O').grams).toBeCloseTo(72.06, 6)
+  })
+
+  it('oxygen limiting: extent, leftover propane and CO2 yield from the oracle', async () => {
+    const result = await executeStoich({
+      equation: 'C3H8 + O2 -> CO2 + H2O',
+      reactants: [{ formula: 'C3H8', moles: 0.5 }, { formula: 'O2', moles: 2 }],
+      product: 'CO2',
+    })
+    assertLossless(result)
+    expect(result.extent).toBeCloseTo(0.4, 12)
+    expect(result.limiting).toEqual(['O2'])
+    const propane = rowFor(result.reactants, 'C3H8')
+    expect(propane.limiting).toBe(false)
+    expect(propane.consumedMoles).toBeCloseTo(0.4, 12)
+    expect(propane.leftoverMoles).toBeCloseTo(0.1, 12)
+    expect(propane.leftoverGrams).toBeCloseTo(4.4097, 6)
+    expect(rowFor(result.reactants, 'O2').leftoverMoles).toBe(0)
+    expect(rowFor(result.products, 'CO2').grams).toBeCloseTo(52.8108, 6)
+    expect(rowFor(result.products, 'H2O').grams).toBeCloseTo(28.824, 6)
+    expect(result.yieldProduct).toBe('CO2')
+    expect(result.theoreticalYieldMol).toBeCloseTo(1.2, 12)
+    expect(result.theoreticalYieldG).toBeCloseTo(52.8108, 6)
+    expect(result.percentYield).toBeUndefined()
+  })
+
+  it('percent yield from a measured product mass', async () => {
+    const result = await executeStoich({
+      equation: 'C3H8 + O2 -> CO2 + H2O',
+      reactants: [{ formula: 'C3H8', moles: 0.5 }, { formula: 'O2', moles: 2 }],
+      product: 'CO2',
+      actualYieldG: 44,
+    })
+    assertLossless(result)
+    expect(result.actualYieldG).toBe(44)
+    expect(result.percentYield).toBeCloseTo(83.3162913646, 8)
+  })
+
+  it('grams input is converted with the formula molar mass (Zn + 2 HCl)', async () => {
+    const result = await executeStoich({
+      equation: 'Zn + 2HCl -> ZnCl2 + H2',
+      reactants: [{ formula: 'Zn', grams: 6.54 }, { formula: 'HCl', moles: 0.2 }],
+      product: 'H2',
+    })
+    assertLossless(result)
+    expect(result.extent).toBeCloseTo(0.1, 12)
+    expect(result.limiting).toEqual(['HCl'])
+    const zinc = rowFor(result.reactants, 'Zn')
+    expect(zinc.availableGrams).toBeCloseTo(6.54, 9)
+    expect(zinc.availableMoles).toBeCloseTo(0.100030590395, 12)
+    expect(zinc.leftoverMoles).toBeCloseTo(3.05903946161e-05, 15)
+    expect(zinc.leftoverGrams).toBeCloseTo(0.002, 9)
+    expect(rowFor(result.products, 'H2').grams).toBeCloseTo(0.2016, 9)
+    expect(result.theoreticalYieldG).toBeCloseTo(0.2016, 9)
+  })
+
+  it('reports co-limiting reactants when two ratios tie', async () => {
+    const result = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: 2 }, { formula: 'O2', moles: 1 }],
+      product: 'H2O',
+    })
+    assertLossless(result)
+    expect(result.extent).toBeCloseTo(1, 12)
+    expect(result.limiting).toEqual(['H2', 'O2'])
+    expect(rowFor(result.products, 'H2O').moles).toBeCloseTo(2, 12)
+    expect(rowFor(result.products, 'H2O').grams).toBeCloseTo(36.03, 6)
+  })
+
+  it('hydrate formulas keep their water of crystallisation', async () => {
+    const result = await executeStoich({
+      equation: 'CuSO4·5H2O -> CuSO4 + H2O',
+      reactants: [{ formula: 'CuSO4·5H2O', moles: 0.5 }],
+      product: 'H2O',
+    })
+    assertLossless(result)
+    expect(result.extent).toBeCloseTo(0.5, 12)
+    expect(rowFor(result.reactants, 'CuSO4·5H2O').molarMass).toBeCloseTo(249.677, 6)
+    expect(rowFor(result.products, 'CuSO4').grams).toBeCloseTo(79.801, 6)
+    expect(rowFor(result.products, 'H2O').moles).toBeCloseTo(2.5, 12)
+    expect(rowFor(result.products, 'H2O').grams).toBeCloseTo(45.0375, 6)
+  })
+
+  it('ionic equations: charge-carrying species match and H+ can be the excess', async () => {
+    const result = await executeStoich({
+      equation: 'MnO4- + Fe2+ + H+ -> Mn2+ + Fe3+ + H2O',
+      reactants: [
+        { formula: 'MnO4-', moles: 0.02 },
+        { formula: 'Fe2+', moles: 0.1 },
+        { formula: 'H+', moles: 0.2 },
+      ],
+      product: 'Mn2+',
+    })
+    assertLossless(result)
+    expect(result.extent).toBeCloseTo(0.02, 12)
+    expect(result.limiting).toEqual(['MnO4-', 'Fe2+'])
+    const protons = rowFor(result.reactants, 'H+')
+    expect(protons.leftoverMoles).toBeCloseTo(0.04, 12)
+    expect(protons.leftoverGrams).toBeCloseTo(0.04032, 9)
+    expect(rowFor(result.products, 'Mn2+').grams).toBeCloseTo(1.09876, 6)
+    expect(result.theoreticalYieldG).toBeCloseTo(1.09876, 6)
+  })
+
+  it('a species that is not a reactant in the equation is rejected, not guessed', async () => {
+    const result = await executeStoich({
+      equation: 'C3H8 + O2 -> CO2 + H2O',
+      reactants: [{ formula: 'C3H8', moles: 1 }, { formula: 'C2H6', moles: 1 }],
+    })
+    expect(result.valid).toBe(false)
+    expect(String(result.error)).toContain('not a reactant')
+  })
+
+  it('an unstated reactant amount is an error — the limiting reagent would be undefined', async () => {
+    const result = await executeStoich({
+      equation: 'C3H8 + O2 -> CO2 + H2O',
+      reactants: [{ formula: 'C3H8', moles: 1 }],
+    })
+    expect(result.valid).toBe(false)
+    expect(String(result.error)).toContain('O2')
+    expect(String(result.error)).toContain('limiting')
+  })
+
+  it('rejects both or neither of moles/grams, duplicates and non-positive amounts', async () => {
+    const both = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: 1, grams: 2 }, { formula: 'O2', moles: 1 }],
+    })
+    expect(both.valid).toBe(false)
+    expect(String(both.error)).toContain('exactly one of moles or grams')
+
+    const neither = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2' }, { formula: 'O2', moles: 1 }],
+    })
+    expect(neither.valid).toBe(false)
+    expect(String(neither.error)).toContain('neither')
+
+    const duplicate = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: 1 }, { formula: 'H2', moles: 2 }, { formula: 'O2', moles: 1 }],
+    })
+    expect(duplicate.valid).toBe(false)
+    expect(String(duplicate.error)).toContain('more than once')
+
+    const negative = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: -1 }, { formula: 'O2', moles: 1 }],
+    })
+    expect(negative.valid).toBe(false)
+    expect(String(negative.error)).toContain('positive')
+
+    const noAmounts = await executeStoich({ equation: 'H2 + O2 -> H2O', reactants: [] })
+    expect(noAmounts.valid).toBe(false)
+    expect(String(noAmounts.error)).toContain('every reactant')
+  })
+
+  it('yield options are validated: unknown product, yield without product, negative measured mass', async () => {
+    const unknownProduct = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: 2 }, { formula: 'O2', moles: 1 }],
+      product: 'H2O2',
+    })
+    expect(unknownProduct.valid).toBe(false)
+    expect(String(unknownProduct.error)).toContain('not a product')
+
+    const orphanYield = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: 2 }, { formula: 'O2', moles: 1 }],
+      actualYieldG: 30,
+    })
+    expect(orphanYield.valid).toBe(false)
+    expect(String(orphanYield.error)).toContain('needs a product')
+
+    const negativeYield = await executeStoich({
+      equation: 'H2 + O2 -> H2O',
+      reactants: [{ formula: 'H2', moles: 2 }, { formula: 'O2', moles: 1 }],
+      product: 'H2O',
+      actualYieldG: -1,
+    })
+    expect(negativeYield.valid).toBe(false)
+    expect(String(negativeYield.error)).toContain('non-negative')
+  })
+
+  it('an equation that cannot be parsed or balanced is reported as an error', async () => {
+    const noArrow = await executeStoich({
+      equation: 'H2 + O2 H2O',
+      reactants: [{ formula: 'H2', moles: 1 }],
+    })
+    expect(noArrow.valid).toBe(false)
+    expect(String(noArrow.error).length).toBeGreaterThan(0)
+
+    const unparseable = await executeStoich({
+      equation: 'Xx2 + O2 -> XxO2',
+      reactants: [{ formula: 'Xx2', moles: 1 }],
+    })
+    expect(unparseable.valid).toBe(false)
+  })
+
+  it('render text states the limiting reagent and every leftover', async () => {
+    const result = await executeStoich({
+      equation: 'C3H8 + O2 -> CO2 + H2O',
+      reactants: [{ formula: 'C3H8', moles: 0.5 }, { formula: 'O2', moles: 2 }],
+      product: 'CO2',
+    })
+    const output = tools.stoichiometry.output as unknown as {
+      render: (args: unknown, value: unknown) => { type: string, text: string }[]
+    }
+    const text = output.render({}, result).map((part) => part.text).join('\n')
+    expect(text).toContain('limiting reagent: O2')
+    expect(text).toContain('[limiting]')
+    expect(text).toContain('theoretical yield of CO2')
   })
 })

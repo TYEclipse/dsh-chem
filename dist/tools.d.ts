@@ -13,6 +13,38 @@ export interface ToolSet {
     ph: ToolDefinition;
     balance_equation: ToolDefinition;
     gas_law: ToolDefinition;
+    stoichiometry: ToolDefinition;
+}
+/** Output-facing shape of `stoichiometry` (undefined keys are never emitted). */
+export interface StoichiometryOut {
+    valid: boolean;
+    equation?: string;
+    extent?: number;
+    limiting?: string[];
+    reactants?: {
+        formula: string;
+        coefficient: number;
+        molarMass: number;
+        availableMoles: number;
+        availableGrams: number;
+        consumedMoles: number;
+        leftoverMoles: number;
+        leftoverGrams: number;
+        limiting: boolean;
+    }[];
+    products?: {
+        formula: string;
+        coefficient: number;
+        molarMass: number;
+        moles: number;
+        grams: number;
+    }[];
+    yieldProduct?: string;
+    theoreticalYieldMol?: number;
+    theoreticalYieldG?: number;
+    actualYieldG?: number;
+    percentYield?: number;
+    error?: string;
 }
 export interface FormulaMassResult {
     valid: boolean;

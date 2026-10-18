@@ -19,7 +19,7 @@ Cross-validation: anchors must match publicly published textbook values
 C6H12O6 180.16, KMnO4 158.03, NH3 17.03).
 """
 import itertools
-import math, re
+import math, re, sys
 from fractions import Fraction
 
 ATOMIC = {
@@ -475,3 +475,164 @@ print(f'molar_mass_from_density_1.96_1atm_273.15K\t{(1.96 * GAS_R * 273.15) / 1!
 print(f'molar_mass_from_density_1.2506_1atm_273.15K\t{(1.2506 * GAS_R * 273.15) / 1!r}')
 print(f'molar_mass_from_density_1.15_1.5atm_300K\t{(1.15 * GAS_R * 300) / 1.5!r}')
 print(f'density_published_check_CO2\t{((1 * CO2_MASS) / (GAS_R * 273.15)):.4f} (published 1.96 g/L)')
+
+# ---------------------------------------------------------------------------
+# stoichiometry anchors (limiting reagent / extent / yields)
+# Independent of the TS implementation: coefficients come from this file's own
+# Fraction balancer, molar masses from this file's own periodic table.
+print()
+print('# --- stoichiometry anchors (extent / limiting reagent / yields) ---')
+
+
+def _fmass(species):
+    return parse_formula(species)[0]
+
+
+def stoich(eq, amounts, product=None, actual_g=None):
+    """(extent, reactant rows, product rows, limiting names, yield tuple)."""
+    at = ARROW_RE_PY.search(eq)
+    left = _split_species(eq[:at.start()])
+    right = _split_species(eq[at.end():])
+    kind, coeffs, _u, _e = balance_equation(eq)
+    assert kind == 'ok', (eq, kind)
+    rc = dict(zip(left, coeffs[:len(left)]))
+    pc = dict(zip(right, coeffs[len(left):]))
+    moles = {}
+    for name, spec in amounts.items():
+        if 'moles' in spec:
+            moles[name] = spec['moles']
+        else:
+            moles[name] = spec['grams'] / _fmass(name)
+    extent = min(moles[n] / rc[n] for n in left)
+    limiting = [n for n in left if abs(moles[n] / rc[n] - extent) <= 1e-9 * max(1.0, extent)]
+    reactants = []
+    for n in left:
+        m = _fmass(n)
+        consumed = extent * rc[n]
+        left_m = max(0.0, moles[n] - consumed)
+        reactants.append((n, rc[n], m, moles[n], moles[n] * m, consumed, left_m, left_m * m))
+    products = []
+    for n in right:
+        m = _fmass(n)
+        mol = extent * pc[n]
+        products.append((n, pc[n], m, mol, mol * m))
+    y = None
+    if product is not None:
+        row = [p for p in products if p[0] == product][0]
+        if actual_g is None:
+            y = (row[0], row[3], row[4])
+        else:
+            y = (row[0], row[3], row[4], actual_g, actual_g / row[4] * 100)
+    return extent, reactants, products, limiting, y
+
+
+STOICH_CASES = [
+    ('propane_stoich', 'C3H8 + O2 -> CO2 + H2O', {'C3H8': {'moles': 1.0}, 'O2': {'moles': 5.0}}, None, None),
+    ('propane_oxygen_limiting', 'C3H8 + O2 -> CO2 + H2O', {'C3H8': {'moles': 0.5}, 'O2': {'moles': 2.0}}, 'CO2', None),
+    ('propane_percent_yield', 'C3H8 + O2 -> CO2 + H2O', {'C3H8': {'moles': 0.5}, 'O2': {'moles': 2.0}}, 'CO2', 44.0),
+    ('zinc_acid_grams', 'Zn + 2HCl -> ZnCl2 + H2', {'Zn': {'grams': 6.54}, 'HCl': {'moles': 0.2}}, 'H2', None),
+    ('water_colimiting', 'H2 + O2 -> H2O', {'H2': {'moles': 2.0}, 'O2': {'moles': 1.0}}, 'H2O', None),
+    ('hydrate_decomposition', 'CuSO4·5H2O -> CuSO4 + H2O', {'CuSO4·5H2O': {'moles': 0.5}}, 'H2O', None),
+    ('permanganate_ionic', 'MnO4- + Fe2+ + H+ -> Mn2+ + Fe3+ + H2O',
+     {'MnO4-': {'moles': 0.02}, 'Fe2+': {'moles': 0.1}, 'H+': {'moles': 0.2}}, 'Mn2+', None),
+]
+for slug, eq, amounts, product, actual in STOICH_CASES:
+    extent, reactants, products, limiting, y = stoich(eq, amounts, product, actual)
+    print(f'stoich.{slug}.extent\t{extent!r}')
+    print(f'stoich.{slug}.limiting\t{",".join(limiting)}')
+    for n, coef, m, avail, avail_g, consumed, left_m, left_g in reactants:
+        print(f'stoich.{slug}.r.{n}\tcoef={coef}\tM={m!r}\tavailMol={avail!r}\tavailG={avail_g!r}'
+              f'\tconsumed={consumed!r}\tleftMol={left_m!r}\tleftG={left_g!r}')
+    for n, coef, m, mol, g in products:
+        print(f'stoich.{slug}.p.{n}\tcoef={coef}\tM={m!r}\tmol={mol!r}\tg={g!r}')
+    if y is not None:
+        if len(y) == 3:
+            print(f'stoich.{slug}.yield\t{y[0]}\tmol={y[1]!r}\tg={y[2]!r}')
+        else:
+            print(f'stoich.{slug}.yield\t{y[0]}\tmol={y[1]!r}\tg={y[2]!r}\tactualG={y[3]!r}\tpercent={y[4]!r}')
+    # Same anchors at the precision the tests assert them (6 significant digits):
+    # the coverage hint compares literals, so this keeps every asserted decimal
+    # traceable to a line of oracle output instead of "close enough to the repr".
+    for n, coef, m, avail, avail_g, consumed, left_m, left_g in reactants:
+        print(f'stoich.{slug}.r.{n}.round6\tM={m:.6g}\tavailMol={avail:.6g}\tavailG={avail_g:.6g}'
+              f'\tconsumed={consumed:.6g}\tleftMol={left_m:.6g}\tleftG={left_g:.6g}')
+    for n, coef, m, mol, g in products:
+        print(f'stoich.{slug}.p.{n}.round6\tM={m:.6g}\tmol={mol:.6g}\tg={g:.6g}')
+    if y is not None and len(y) == 5:
+        print(f'stoich.{slug}.percent.round6\t{y[4]:.6g}')
+    for n, coef, m, avail, avail_g, consumed, left_m, left_g in reactants:
+        print(f'stoich.{slug}.r.{n}.round12\tavailMol={avail:.12g}\tavailG={avail_g:.12g}\tleftMol={left_m:.12g}')
+    if y is not None and len(y) == 5:
+        print(f'stoich.{slug}.percent.round12\t{y[4]:.12g}')
+
+# ---------------------------------------------------------------------------
+# --check: self-verification. The ruler must be OUTSIDE this file's own maths
+# (published textbook values + definitional identities) — an oracle that only
+# agrees with the implementation would pass even when both are wrong (R63).
+def self_check():
+    failures = []
+
+    def check(label, got, want, tol):
+        if got is None or not (abs(got - want) <= tol):
+            failures.append(f'{label}: {got!r} != {want!r} (tol {tol})')
+
+    for formula, published in [('H2O', 18.015), ('H2SO4', 98.08), ('NaCl', 58.44), ('Ca(OH)2', 74.09),
+                               ('CuSO4·5H2O', 249.68), ('C6H12O6', 180.16), ('KMnO4', 158.03), ('NH3', 17.03)]:
+        check(f'molar mass {formula}', _fmass(formula), published, 0.02)
+
+    for eq, want in [('C3H8 + O2 -> CO2 + H2O', [1, 5, 3, 4]),
+                     ('KMnO4 + HCl -> KCl + MnCl2 + Cl2 + H2O', [2, 16, 2, 2, 5, 8])]:
+        kind, coeffs, _u, _e = balance_equation(eq)
+        if kind != 'ok' or coeffs != want:
+            failures.append(f'balance {eq}: {kind} {coeffs} != {want}')
+
+    check('R in L·atm/(mol·K)', GAS_R, 0.082057366, 1e-8)
+    check('molar volume at 0 °C, 1 atm', GAS_R * 273.15, 22.41396954, 1e-6)
+    check('pH of 0.01 M strong acid', -math.log10(0.01), 2.0, 1e-12)
+    check('pH of 0.01 M strong base', 14 + math.log10(0.01), 12.0, 1e-12)
+
+    for slug, eq, amounts, product, actual in STOICH_CASES:
+        extent, reactants, products, limiting, _y = stoich(eq, amounts, product, actual)
+        if extent <= 0:
+            failures.append(f'stoich {slug}: non-positive extent {extent!r}')
+        mass_in = sum(r[5] * r[2] for r in reactants)
+        mass_out = sum(p[3] * p[2] for p in products)
+        if abs(mass_in - mass_out) > 1e-9 * max(1.0, mass_in):
+            failures.append(f'stoich {slug}: mass not conserved ({mass_in!r} vs {mass_out!r})')
+        for r in reactants:
+            if r[6] < -1e-12:
+                failures.append(f'stoich {slug}: negative leftover for {r[0]}')
+            if r[5] > r[3] + 1e-12:
+                failures.append(f'stoich {slug}: consumed more {r[0]} than available')
+        if not limiting:
+            failures.append(f'stoich {slug}: no limiting reagent')
+
+    # published: exactly 1 mol propane : 5 mol O2 is the stoichiometric ratio —
+    # both reactants run out together and nothing is left over.
+    extent, reactants, products, limiting, _y = stoich(
+        'C3H8 + O2 -> CO2 + H2O', {'C3H8': {'moles': 1.0}, 'O2': {'moles': 5.0}})
+    if sorted(limiting) != ['C3H8', 'O2']:
+        failures.append(f'propane exact ratio: limiting {limiting}')
+    if any(r[6] > 1e-12 for r in reactants):
+        failures.append('propane exact ratio: leftover present')
+    # published: CO2 = 44.01 g/mol → 3 mol CO2 = 132.03 g
+    co2 = [p for p in products if p[0] == 'CO2'][0]
+    check('3 mol CO2 mass', co2[4], 132.03, 0.02)
+    # published: 1 mol Zn (65.38 g/mol) is 65.38 g and liberates 1 mol H2 (2.016 g)
+    _e, r_zn, p_h2, _l, _y = stoich('Zn + 2HCl -> ZnCl2 + H2',
+                                    {'Zn': {'grams': 65.38}, 'HCl': {'moles': 2.0}})
+    check('1 mol Zn mass', r_zn[0][3] * r_zn[0][2], 65.38, 0.02)
+    check('1 mol H2 mass', [p for p in p_h2 if p[0] == 'H2'][0][4], 2.016, 0.01)
+
+    if failures:
+        print('SELF-CHECK FAILED')
+        for line in failures:
+            print('  [x]', line)
+        return 1
+    print('SELF-CHECK OK: 8 published molar masses, 2 textbook balances, R/molar volume, '
+          'pH definition, 7 stoichiometry cases (mass conservation + leftover bounds)')
+    return 0
+
+
+if '--check' in sys.argv:
+    sys.exit(self_check())

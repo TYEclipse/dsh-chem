@@ -7,6 +7,7 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { balanceEquation, renderBalancedEquation } from "./balance.js";
+import { stoichiometry } from "./stoich.js";
 import { idealGas, gasDensity, molarMassFromDensity, molarVolume, } from "./gaslaw.js";
 import { AVOGADRO, bufferPh, formulaMass, parseFormula, phFromH, phFromOH, phFromPH, phFromPOH, resolveMolarMass, solutionPercent, } from "./core.js";
 function fmt(value) {
@@ -113,6 +114,29 @@ function renderGasLaw(value) {
     if (v.molarMass !== undefined)
         lines.push(`molar mass: ${fmt(v.molarMass)} g/mol`);
     lines.push(`R = ${fmt(v.r)} L·atm/(mol·K)`);
+    return lines.join('\n');
+}
+function renderStoichiometry(value) {
+    const v = value;
+    if (!v.valid)
+        return `stoichiometry failed: ${v.error}`;
+    const lines = [v.equation];
+    lines.push(`extent of reaction: ${fmt(v.extent)} mol`);
+    lines.push(`limiting reagent: ${v.limiting.join(' + ')}`);
+    for (const r of v.reactants) {
+        lines.push(`  ${r.formula.padEnd(10)} × ${String(r.coefficient).padStart(2)}  available ${fmt(r.availableMoles)} mol (${fmt(r.availableGrams)} g)`
+            + `  consumed ${fmt(r.consumedMoles)} mol  left ${fmt(r.leftoverMoles)} mol (${fmt(r.leftoverGrams)} g)`
+            + (r.limiting ? '  [limiting]' : ''));
+    }
+    for (const p of v.products) {
+        lines.push(`product ${p.formula} × ${p.coefficient}: ${fmt(p.moles)} mol (${fmt(p.grams)} g)`);
+    }
+    if (v.yieldProduct !== undefined) {
+        lines.push(`theoretical yield of ${v.yieldProduct}: ${fmt(v.theoreticalYieldG)} g (${fmt(v.theoreticalYieldMol)} mol)`);
+    }
+    if (v.percentYield !== undefined) {
+        lines.push(`percent yield: ${fmt(v.percentYield)} % (measured ${fmt(v.actualYieldG)} g)`);
+    }
     return lines.join('\n');
 }
 function renderPh(value) {
@@ -751,6 +775,115 @@ export function buildChemTools() {
             return { valid: false, error: `unknown operation "${op}" (expected ideal, molar_volume, density or molar_mass)` };
         },
     });
-    return { formula_mass, mass_moles, solution, ph, balance_equation, gas_law };
+    const stoichiometry_tool = defineTool({
+        name: 'stoichiometry',
+        description: 'Limiting-reagent arithmetic for one balanced equation: give the equation and how much of each '
+            + 'reactant you actually have (moles or grams), and get the extent of reaction, which reactant runs out '
+            + 'first, how much of every product forms (mol and g) and what is left over. Optional `product` + '
+            + '`actualYieldG` turn it into a theoretical / percent yield. Coefficients come from exact rational '
+            + 'balancing, molar masses from IUPAC atomic weights — nothing is estimated. Every reactant in the '
+            + 'equation must be given an amount: an unstated amount would make the limiting reagent undefined, so it '
+            + 'is reported as an error instead of guessed.',
+        parameters: {
+            equation: { type: 'string', required: true, description: 'The equation (balanced or not), e.g. "C3H8 + O2 -> CO2 + H2O".' },
+            reactants: {
+                type: 'array',
+                required: true,
+                description: 'One entry per reactant in the equation, each with exactly one of moles or grams.',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        formula: { type: 'string', required: true, description: 'Reactant formula exactly as written in the equation, e.g. "C3H8".' },
+                        moles: { type: 'number', description: 'Amount available in mol (> 0).' },
+                        grams: { type: 'number', description: 'Mass available in g (> 0); converted with the formula molar mass.' },
+                    },
+                },
+            },
+            product: { type: 'string', description: 'Product whose theoretical yield to report, e.g. "CO2".' },
+            actualYieldG: { type: 'number', description: 'Measured mass of `product` in g — requires `product`; yields percentYield.' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    equation: { type: 'string' },
+                    extent: { type: 'number' },
+                    limiting: { type: 'array', items: { type: 'string' } },
+                    reactants: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                formula: { type: 'string', required: true },
+                                coefficient: { type: 'number', required: true },
+                                molarMass: { type: 'number', required: true },
+                                availableMoles: { type: 'number', required: true },
+                                availableGrams: { type: 'number', required: true },
+                                consumedMoles: { type: 'number', required: true },
+                                leftoverMoles: { type: 'number', required: true },
+                                leftoverGrams: { type: 'number', required: true },
+                                limiting: { type: 'boolean', required: true },
+                            },
+                        },
+                    },
+                    products: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                formula: { type: 'string', required: true },
+                                coefficient: { type: 'number', required: true },
+                                molarMass: { type: 'number', required: true },
+                                moles: { type: 'number', required: true },
+                                grams: { type: 'number', required: true },
+                            },
+                        },
+                    },
+                    yieldProduct: { type: 'string' },
+                    theoreticalYieldMol: { type: 'number' },
+                    theoreticalYieldG: { type: 'number' },
+                    actualYieldG: { type: 'number' },
+                    percentYield: { type: 'number' },
+                    error: { type: 'string' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderStoichiometry(value) }],
+        },
+        async execute(args) {
+            const result = stoichiometry({
+                equation: args.equation,
+                reactants: args.reactants ?? [],
+                product: args.product,
+                actualYieldG: args.actualYieldG,
+            });
+            if (!result.ok)
+                return { valid: false, error: result.error };
+            const out = {
+                valid: true,
+                equation: result.equation,
+                extent: result.extent,
+                limiting: result.limiting,
+                reactants: result.reactants,
+                products: result.products,
+            };
+            if (result.yieldProduct !== undefined)
+                out.yieldProduct = result.yieldProduct;
+            if (result.theoreticalYieldMol !== undefined)
+                out.theoreticalYieldMol = result.theoreticalYieldMol;
+            if (result.theoreticalYieldG !== undefined)
+                out.theoreticalYieldG = result.theoreticalYieldG;
+            if (result.actualYieldG !== undefined)
+                out.actualYieldG = result.actualYieldG;
+            if (result.percentYield !== undefined)
+                out.percentYield = result.percentYield;
+            return out;
+        },
+    });
+    return { formula_mass, mass_moles, solution, ph, balance_equation, gas_law, stoichiometry: stoichiometry_tool };
 }
 //# sourceMappingURL=tools.js.map

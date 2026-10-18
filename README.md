@@ -2,7 +2,7 @@
 
 Deterministic chemistry math for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) — **zero runtime dependencies**, pure arithmetic over IUPAC data.
 
-> 中文简介：化学计量数学工具箱。六个零依赖确定性工具——化学式解析与摩尔质量（支持嵌套括号、结晶水、离子电荷）、质量/摩尔/粒子数换算、溶液浓度（摩尔浓度、稀释 C1V1=C2V2、百分比浓度）、pH/pOH 与缓冲溶液、配平化学方程式（精确有理数运算，含电荷守恒）、理想气体定律（PV=nRT 求解、摩尔体积、气体密度与由密度反推摩尔质量）。专门替代 LLM 高频出错的化学心算。
+> 中文简介：化学计量数学工具箱。七个零依赖确定性工具——化学式解析与摩尔质量（支持嵌套括号、结晶水、离子电荷）、质量/摩尔/粒子数换算、溶液浓度（摩尔浓度、稀释 C1V1=C2V2、百分比浓度）、pH/pOH 与缓冲溶液、配平化学方程式（精确有理数运算，含电荷守恒）、理想气体定律（PV=nRT 求解、摩尔体积、气体密度与由密度反推摩尔质量）。专门替代 LLM 高频出错的化学心算。
 
 ## Why this plugin
 
@@ -12,6 +12,7 @@ Agents get chemistry arithmetic wrong in predictable ways:
 - **Element case sensitivity** — "Co" is cobalt (58.93), "CO" is carbon monoxide (28.01).
 - **Dilution math** — C1V1 = C2V2 with a wrong or missing factor.
 - **pH log/antilog arithmetic** — pH of 0.01 M HCl is 2, not 12.
+- **Limiting-reagent reasoning** — dividing two amounts by the coefficients and comparing, then carrying the extent of reaction through every product.
 
 These tools replace all of it with deterministic tables and formulas. No network, no state, no dependencies — install and call.
 
@@ -116,6 +117,53 @@ Fixed units, no unit guessing: pressure **atm** (also reported in kPa/mmHg), vol
 - `molar_mass` — M = ρ·R·T/P from a measured density: `{ "operation": "molar_mass", "densityGPerL": 1.96, "pressureAtm": 1, "temperatureK": 273.15 }` → `molarMass: 43.9313803082277`.
 
 R = 8.31446261815324 / 101.325 L·atm/(mol·K). Missing operands and non-positive values are reported as errors rather than guessed.
+
+### `stoichiometry` — limiting reagent, yield and leftovers
+
+Give the equation plus how much of **each** reactant you actually have (moles or grams) and the tool
+answers the questions that follow: the extent of reaction, which reactant runs out first, how much of
+every product forms, what is left over — and, with `product` + `actualYieldG`, the theoretical and
+percent yield.
+
+```json
+{ "equation": "C3H8 + O2 -> CO2 + H2O",
+  "reactants": [{ "formula": "C3H8", "moles": 0.5 }, { "formula": "O2", "moles": 2 }],
+  "product": "CO2", "actualYieldG": 44 }
+```
+
+```json
+{
+  "valid": true,
+  "equation": "C3H8 + 5O2 -> 3CO2 + 4H2O",
+  "extent": 0.4,
+  "limiting": ["O2"],
+  "reactants": [
+    { "formula": "C3H8", "coefficient": 1, "molarMass": 44.097, "availableMoles": 0.5,
+      "availableGrams": 22.0485, "consumedMoles": 0.4, "leftoverMoles": 0.1,
+      "leftoverGrams": 4.4097, "limiting": false },
+    { "formula": "O2", "coefficient": 5, "molarMass": 31.998, "availableMoles": 2,
+      "availableGrams": 63.996, "consumedMoles": 2, "leftoverMoles": 0,
+      "leftoverGrams": 0, "limiting": true }
+  ],
+  "products": [
+    { "formula": "CO2", "coefficient": 3, "molarMass": 44.009, "moles": 1.2, "grams": 52.8108 },
+    { "formula": "H2O", "coefficient": 4, "molarMass": 18.015, "moles": 1.6, "grams": 28.824 }
+  ],
+  "yieldProduct": "CO2",
+  "theoreticalYieldMol": 1.2,
+  "theoreticalYieldG": 52.8108,
+  "actualYieldG": 44,
+  "percentYield": 83.3162913646
+}
+```
+
+Deterministic behaviour worth knowing:
+
+- **Every reactant needs an amount** — an unstated amount would make the limiting reagent undefined, so it is an error naming the missing species instead of an assumption about “excess”.
+- **Co-limiting is reported, not broken by a tie-break**: at exactly 2 mol H2 : 1 mol O2 both are returned in `limiting`, and nothing is left over.
+- **Grams are converted with the same IUPAC molar masses** `formula_mass` reports, so `6.54 g Zn` is the same number everywhere.
+- **Coefficients come from the exact rational balancer** — this tool balances first (`C3H8 + O2 -> …` works as written), charge and hydrate included.
+- **Honest failures**: a species that is not a reactant, both/neither of `moles`/`grams`, a duplicate entry, a non-positive amount, a product that is not in the equation, or `actualYieldG` without `product` all return `valid: false` with the reason.
 
 ## Install
 

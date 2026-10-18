@@ -1,13 +1,14 @@
 /**
  * dsh-chem — deterministic chemistry math for DeepSeek Harness.
  *
- * Six zero-dependency tools (pure arithmetic over IUPAC data):
+ * Seven zero-dependency tools (pure arithmetic over IUPAC data):
  *   formula_mass      — parse a chemical formula and compute its molar mass + breakdown
  *   mass_moles        — convert mass (g) <-> amount (mol) <-> particle count
  *   solution          — molarity, dilution (C1V1 = C2V2) and percent solutions
  *   ph                — pH / pOH / [H+] / [OH-] conversions + Henderson-Hasselbalch buffers
  *   balance_equation  — balance an equation with exact rational arithmetic (+ charge balance)
  *   gas_law           — PV = nRT solves, molar volume, gas density and molar mass from density
+ *   stoichiometry     — limiting reagent, extent of reaction, product mass and leftovers
  *
  * Agents get chemistry arithmetic wrong in predictable ways: molar-mass sums,
  * case-sensitivity of element symbols (Co vs CO), dilution factors, log/antilog
