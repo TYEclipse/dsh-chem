@@ -2,6 +2,10 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-chem`
 
+## [0.4.0] — 2026-11-08
+### Minor · R93
+- [自主进化] R93 新增 formula_from_composition（元素分析→实验式/分子式）与 equilibrium（弱酸弱碱 ICE 精确二次方程，附 √(K·C) 高估百分比与回代自检）
+
 ## [0.3.0] — 2026-10-19
 ### Minor · R73
 - [自主进化] R73 新增 stoichiometry（限量试剂/反应进度/理论产率与剩余量）+ oracle 加 --check 自检 + 无损 JSON 助手统一

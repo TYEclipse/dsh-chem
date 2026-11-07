@@ -9,14 +9,8 @@
  * @module dsh-chem/stoich
  */
 import { balanceEquation } from "./balance.js";
-import { formulaMass, parseFormula } from "./core.js";
-/** Fold `-0` and binary-noise tails at the output boundary (never mid-computation). */
-function roundOut(value, digits = 12) {
-    if (!Number.isFinite(value))
-        return value;
-    const r = Number(value.toPrecision(digits));
-    return r === 0 ? 0 : r;
-}
+import { formulaMass, parseFormula, roundOut } from "./core.js";
+/** Molar mass of one species, or an error string. */
 function molarMassOf(formula) {
     const parsed = parseFormula(formula);
     if (!parsed.ok)

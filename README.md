@@ -165,6 +165,98 @@ Deterministic behaviour worth knowing:
 - **Coefficients come from the exact rational balancer** — this tool balances first (`C3H8 + O2 -> …` works as written), charge and hydrate included.
 - **Honest failures**: a species that is not a reactant, both/neither of `moles`/`grams`, a duplicate entry, a non-positive amount, a product that is not in the equation, or `actualYieldG` without `product` all return `valid: false` with the reason.
 
+### `formula_from_composition` — elemental analysis → empirical (and molecular) formula
+
+Give the mass percent (or the grams) of each element and get the empirical formula, the integer
+multiplier the analysis needed, and — when `molarMass` is also given — the molecular formula.
+
+```json
+{ "mode": "percent",
+  "parts": [{ "symbol": "C", "value": 40.0 }, { "symbol": "H", "value": 6.71 }, { "symbol": "O", "value": 53.29 }],
+  "molarMass": 180.156 }
+```
+
+```json
+{
+  "valid": true,
+  "mode": "percent",
+  "empiricalFormula": "CH2O",
+  "empiricalMolarMass": 30.026,
+  "multiplier": 1,
+  "maxDeviation": 0.00114558531746,
+  "exact": true,
+  "elements": [
+    { "symbol": "C", "massG": 40, "atomicMass": 12.011, "moles": 3.33028057614, "ratio": 1, "subscript": 1, "massFraction": 40.0019982682 },
+    { "symbol": "H", "massG": 6.71, "atomicMass": 1.008, "moles": 6.65674603175, "ratio": 1.99885441468, "subscript": 2, "massFraction": 6.7141810431 },
+    { "symbol": "O", "massG": 53.29, "atomicMass": 15.999, "moles": 3.33083317707, "ratio": 1.00016593225, "subscript": 1, "massFraction": 53.2838206887 }
+  ],
+  "molecularFormula": "C6H12O6",
+  "molecularMultiplier": 6,
+  "molecularExact": true,
+  "measuredMolarMass": 180.156,
+  "impliedMolarMass": 180.156,
+  "molarMassErrorPercent": 0
+}
+```
+
+What it does deliberately:
+
+- **The smallest ratio is not automatically 1** — `Fe` 111.69 g + `O` 47.997 g gives ratios 1 : 1.5, so
+  subscripts come from the smallest multiplier `k ∈ [1, 8]` whose scaled ratios are all within ±0.05 of
+  integers (here `k = 2` → `Fe2O3`), and `multiplier` is reported so the step is visible.
+- **A molecular formula needs a whole multiple** — `molarMass` is only accepted as a molecular formula
+  when it is within 2 % of an integer multiple of the empirical mass; otherwise `molecularExact: false`
+  and a `note` say how far off it is.
+- **No silent rounding** — when no multiplier fits, the closest fit is returned with `exact: false` and a
+  note, because an analysis that does not support integer subscripts is a measurement problem, not a
+  formula.
+- **Percent data must add up** — `mode: "percent"` requires the parts to sum to 100 ± 1; a 90 % total is
+  an error naming the total, not something to normalise away.
+- **Hill order** — C, then H, then alphabetical (alphabetical without carbon), so the same analysis always
+  prints the same string regardless of input order.
+- **Errors instead of guesses** — unknown symbol, a duplicate element (`H` and `h`), a non-positive value,
+  more than 12 elements, or a non-positive `molarMass` all return `valid: false` with the reason.
+
+### `equilibrium` — weak acid / weak base ICE arithmetic
+
+The calculation everyone skips: a weak acid does not dissociate completely, so `x` is the positive root
+of `x² + K·x − K·C = 0`, not `√(K·C)`. This tool solves the quadratic exactly and also tells you what the
+shortcut would have said.
+
+```json
+{ "mode": "weak_acid", "k": 1.8e-5, "concentration": 0.1 }
+```
+
+```json
+{
+  "valid": true,
+  "mode": "weak_acid",
+  "constantK": 1.8e-5,
+  "pK": 4.7447274949,
+  "concentration": 0.1,
+  "x": 0.00133267097308,
+  "hConc": 0.00133267097308,
+  "ohConc": 7.50372762821e-12,
+  "pH": 2.87527706155,
+  "pOH": 11.1247229384,
+  "degreeOfDissociation": 0.0133267097308,
+  "percentDissociation": 1.33267097308,
+  "approximation": { "x": 0.0013416407865, "errorPercent": 0.673070367938 },
+  "kFromResult": 1.8e-5
+}
+```
+
+- **The shortcut is reported, not assumed valid** — `approximation.errorPercent` is how much `√(K·C)`
+  overstates `x`. It grows as the solution gets more dilute (0.21 % at 1 M acetic acid, 2.14 % at 0.01 M,
+  6.93 % at 0.001 M ammonia with Kb = 1.8e-5); past 5 % a `note` says to use the quadratic answer.
+- **Cancellation-free root** — `x = 2KC/(K + √(K²+4KC))` instead of `(−K + √(K²+4KC))/2`: algebraically the
+  same root, but the second form loses precision exactly in the weak-acid regime (K ≪ C).
+- **A back-check is part of the answer** — `kFromResult` recomputes `x²/(C − x)`, which must equal the K
+  you supplied; if it does not, the numbers are wrong.
+- **`weak_base` mirrors it** — Kb solves for `[OH-]`, then `pH` comes from Kw = 1e-14 at 25 °C.
+- **Scope, stated plainly** — monoprotic acids/bases, no activity coefficients, no ionic strength, no
+  polyprotic steps, no temperature dependence.
+
 ## Install
 
 ```bash

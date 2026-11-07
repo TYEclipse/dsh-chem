@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildChemTools } from '../src/tools.ts'
 import { parseFormula, formulaMass, AVOGADRO } from '../src/core.ts'
+import { weakEquilibrium } from '../src/equil.ts'
 import { assertLossless } from './helpers/lossless-json.ts'
 
 /* ------------------------------------------------------------------ */
@@ -990,5 +991,294 @@ describe('stoichiometry', () => {
     expect(text).toContain('limiting reagent: O2')
     expect(text).toContain('[limiting]')
     expect(text).toContain('theoretical yield of CO2')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* formula_from_composition (anchors: independent python oracle)       */
+/* ------------------------------------------------------------------ */
+describe('formula_from_composition', () => {
+  const executeComposition = tools.formula_from_composition.execute as (args: {
+    mode: 'percent' | 'masses'
+    parts: { symbol: string, value: number }[]
+    molarMass?: number
+  }) => Promise<Record<string, unknown>>
+
+  type ElementRow = { symbol: string, moles: number, ratio: number, subscript: number, massFraction: number }
+
+  it('turns the published analysis of water into H2O', async () => {
+    const result = await executeComposition({
+      mode: 'percent',
+      parts: [{ symbol: 'H', value: 11.19 }, { symbol: 'O', value: 88.81 }],
+    })
+    assertLossless(result)
+    expect(result.valid).toBe(true)
+    expect(result.empiricalFormula).toBe('H2O')
+    expect(relErr(Number(result.empiricalMolarMass), 18.015)).toBeLessThan(1e-9)
+    expect(result.multiplier).toBe(1)
+    expect(result.exact).toBe(true)
+    expect(relErr(Number(result.maxDeviation), 0.00013572313285181714)).toBeLessThan(1e-6)
+    const elements = result.elements as unknown as ElementRow[]
+    // Hill order without carbon is alphabetical, so hydrogen comes first.
+    expect(elements.map((row) => row.symbol)).toEqual(['H', 'O'])
+    expect(elements[0]!.subscript).toBe(2)
+    expect(elements[0]!.ratio).toBeGreaterThan(1.9)
+    expect(relErr(elements[0]!.massFraction, 11.19067443796836)).toBeLessThan(1e-9)
+    expect(relErr(elements[1]!.massFraction, 88.80932556203163)).toBeLessThan(1e-9)
+    expect(result.molecularFormula).toBeUndefined()
+  })
+
+  it('gets the molecular formula only from a molar mass that is a whole multiple', async () => {
+    const glucose = await executeComposition({
+      mode: 'percent',
+      parts: [{ symbol: 'C', value: 40.0 }, { symbol: 'H', value: 6.71 }, { symbol: 'O', value: 53.29 }],
+      molarMass: 180.156,
+    })
+    assertLossless(glucose)
+    expect(glucose.empiricalFormula).toBe('CH2O')
+    expect(relErr(Number(glucose.empiricalMolarMass), 30.026)).toBeLessThan(1e-9)
+    expect(glucose.molecularFormula).toBe('C6H12O6')
+    expect(glucose.molecularMultiplier).toBe(6)
+    expect(glucose.molecularExact).toBe(true)
+    expect(glucose.molarMassErrorPercent).toBe(0)
+    expect(glucose.note).toBeUndefined()
+
+    const benzene = await executeComposition({
+      mode: 'percent',
+      parts: [{ symbol: 'C', value: 92.26 }, { symbol: 'H', value: 7.74 }],
+      molarMass: 78.11,
+    })
+    assertLossless(benzene)
+    expect(benzene.empiricalFormula).toBe('CH')
+    expect(relErr(Number(benzene.empiricalMolarMass), 13.018999999999998)).toBeLessThan(1e-9)
+    expect(benzene.molecularFormula).toBe('C6H6')
+    expect(benzene.molecularMultiplier).toBe(6)
+    expect(relErr(Number(benzene.impliedMolarMass), 78.11399999999999)).toBeLessThan(1e-9)
+    expect(relErr(Number(benzene.molarMassErrorPercent), 0.005120983228767991)).toBeLessThan(1e-6)
+
+    const ethanol = await executeComposition({
+      mode: 'percent',
+      parts: [{ symbol: 'C', value: 52.14 }, { symbol: 'H', value: 13.13 }, { symbol: 'O', value: 34.73 }],
+      molarMass: 46.068,
+    })
+    assertLossless(ethanol)
+    expect(ethanol.empiricalFormula).toBe('C2H6O')
+    expect(ethanol.molecularFormula).toBe('C2H6O')
+    expect(ethanol.molecularMultiplier).toBe(1)
+  })
+
+  it('scales ratios that are not integers (1 : 1.5 needs ×2)', async () => {
+    const ironOxide = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'Fe', value: 111.69 }, { symbol: 'O', value: 47.997 }],
+    })
+    assertLossless(ironOxide)
+    expect(ironOxide.empiricalFormula).toBe('Fe2O3')
+    expect(ironOxide.multiplier).toBe(2)
+    expect(relErr(Number(ironOxide.empiricalMolarMass), 159.687)).toBeLessThan(1e-9)
+    const elements = ironOxide.elements as unknown as ElementRow[]
+    expect(elements.map((row) => row.symbol)).toEqual(['Fe', 'O'])
+    expect(elements[1]!.ratio).toBe(1.5)
+    expect(elements[1]!.subscript).toBe(3)
+
+    const aceticAcid = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'C', value: 24.022 }, { symbol: 'H', value: 4.032 }, { symbol: 'O', value: 31.998 }],
+      molarMass: 60.052,
+    })
+    assertLossless(aceticAcid)
+    // CH2O is the empirical formula of acetic acid; the molar mass doubles it.
+    expect(aceticAcid.empiricalFormula).toBe('CH2O')
+    expect(aceticAcid.molecularFormula).toBe('C2H4O2')
+    expect(aceticAcid.molecularMultiplier).toBe(2)
+  })
+
+  it('refuses to invent integer subscripts when the analysis does not support them', async () => {
+    const noisy = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'C', value: 1.0 }, { symbol: 'H', value: 1.0 }],
+    })
+    assertLossless(noisy)
+    expect(noisy.valid).toBe(true)
+    expect(noisy.exact).toBe(false)
+    expect(noisy.empiricalFormula).toBe('CH12')
+    expect(relErr(Number(noisy.maxDeviation), 0.08432539682539719)).toBeLessThan(1e-9)
+    expect(String(noisy.note)).toContain('closest fit')
+
+    // A molar mass that is not a whole multiple is reported as such, not rounded away.
+    const mismatched = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'C', value: 24.022 }, { symbol: 'H', value: 4.032 }, { symbol: 'O', value: 31.998 }],
+      molarMass: 75.0,
+    })
+    assertLossless(mismatched)
+    expect(mismatched.molecularExact).toBe(false)
+    expect(String(mismatched.note)).toContain('not close to a whole number')
+  })
+
+  it('prints Hill order and rejects malformed analyses', async () => {
+    const methane = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'H', value: 4.032 }, { symbol: 'C', value: 12.011 }],
+    })
+    assertLossless(methane)
+    expect(methane.empiricalFormula).toBe('CH4')
+    const salt = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'Na', value: 22.99 }, { symbol: 'Cl', value: 35.45 }],
+    })
+    expect(salt.empiricalFormula).toBe('ClNa')
+
+    const badSum = await executeComposition({
+      mode: 'percent',
+      parts: [{ symbol: 'C', value: 40 }, { symbol: 'H', value: 50 }],
+    })
+    expect(badSum.valid).toBe(false)
+    expect(String(badSum.error)).toContain('sum')
+
+    const duplicate = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'H', value: 1 }, { symbol: 'h', value: 1 }],
+    })
+    expect(duplicate.valid).toBe(false)
+    expect(String(duplicate.error)).toContain('twice')
+
+    const unknown = await executeComposition({ mode: 'masses', parts: [{ symbol: 'Xx', value: 1 }] })
+    expect(String(unknown.error)).toContain('unknown element')
+
+    const negative = await executeComposition({ mode: 'masses', parts: [{ symbol: 'C', value: -1 }] })
+    expect(String(negative.error)).toContain('positive')
+
+    const empty = await executeComposition({ mode: 'masses', parts: [] })
+    expect(String(empty.error)).toContain('at least one element')
+
+    const tooMany = await executeComposition({
+      mode: 'masses',
+      parts: ['H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F', 'Ne', 'Na', 'Mg', 'Al']
+        .map((symbol) => ({ symbol, value: 1 })),
+    })
+    expect(tooMany.valid).toBe(false)
+    expect(String(tooMany.error)).toContain('too many elements')
+
+    const badMolarMass = await executeComposition({
+      mode: 'masses',
+      parts: [{ symbol: 'C', value: 12.011 }],
+      molarMass: 0,
+    })
+    expect(badMolarMass.valid).toBe(false)
+    expect(String(badMolarMass.error)).toContain('molarMass')
+  })
+
+  it('render text reports the multiplier and the molecular step', async () => {
+    const result = await executeComposition({
+      mode: 'percent',
+      parts: [{ symbol: 'C', value: 40.0 }, { symbol: 'H', value: 6.71 }, { symbol: 'O', value: 53.29 }],
+      molarMass: 180.156,
+    })
+    const output = tools.formula_from_composition.output as unknown as {
+      render: (args: unknown, value: unknown) => { type: string, text: string }[]
+    }
+    const text = output.render({}, result).map((part) => part.text).join('\n')
+    expect(text).toContain('empirical formula: CH2O')
+    expect(text).toContain('integer multiplier: 1')
+    expect(text).toContain('molecular formula: C6H12O6')
+  })
+})
+
+/* ------------------------------------------------------------------ */
+/* equilibrium (anchors: independent python oracle)                    */
+/* ------------------------------------------------------------------ */
+describe('equilibrium', () => {
+  const executeEquilibrium = tools.equilibrium.execute as (args: {
+    mode: 'weak_acid' | 'weak_base'
+    k: number
+    concentration: number
+  }) => Promise<Record<string, unknown>>
+
+  it('solves the weak-acid quadratic instead of the sqrt(KC) shortcut', async () => {
+    const acetic = await executeEquilibrium({ mode: 'weak_acid', k: 1.8e-5, concentration: 0.1 })
+    assertLossless(acetic)
+    expect(acetic.valid).toBe(true)
+    expect(relErr(Number(acetic.x), 0.001332670973077975)).toBeLessThan(1e-10)
+    expect(relErr(Number(acetic.hConc), 0.001332670973077975)).toBeLessThan(1e-10)
+    expect(relErr(Number(acetic.ohConc), 7.50372762821097e-12)).toBeLessThan(1e-10)
+    expect(Math.abs(Number(acetic.pH) - 2.8752770615501357)).toBeLessThan(1e-9)
+    expect(Math.abs(Number(acetic.pOH) - 11.124722938449864)).toBeLessThan(1e-9)
+    expect(relErr(Number(acetic.percentDissociation), 1.3326709730779749)).toBeLessThan(1e-9)
+    expect(relErr(Number(acetic.kFromResult), 1.8e-5)).toBeLessThan(1e-9)
+    const approximation = acetic.approximation as { x: number, errorPercent: number }
+    expect(relErr(approximation.x, 0.001341640786499874)).toBeLessThan(1e-12)
+    expect(relErr(approximation.errorPercent, 0.6730703679380121)).toBeLessThan(1e-9)
+    // 0.67 % below the warning threshold, so no note.
+    expect(acetic.note).toBeUndefined()
+  })
+
+  it('the shortcut error grows as the solution gets more dilute', async () => {
+    const dilute = await executeEquilibrium({ mode: 'weak_acid', k: 1.8e-5, concentration: 0.01 })
+    const concentrated = await executeEquilibrium({ mode: 'weak_acid', k: 1.8e-5, concentration: 1.0 })
+    assertLossless(dilute)
+    assertLossless(concentrated)
+    const errDilute = (dilute.approximation as { errorPercent: number }).errorPercent
+    const errConcentrated = (concentrated.approximation as { errorPercent: number }).errorPercent
+    expect(relErr(errDilute, 2.1438178128790053)).toBeLessThan(1e-9)
+    expect(relErr(errConcentrated, 0.21235703410284176)).toBeLessThan(1e-9)
+    expect(errDilute).toBeGreaterThan(errConcentrated)
+    expect(Math.abs(Number(dilute.pH) - 3.3815758338255093)).toBeLessThan(1e-9)
+    expect(Math.abs(Number(concentrated.pH) - 2.3732850244769472)).toBeLessThan(1e-9)
+  })
+
+  it('handles a stronger weak acid (formic) and a weak base (ammonia)', async () => {
+    const formic = await executeEquilibrium({ mode: 'weak_acid', k: 1.8e-4, concentration: 0.05 })
+    assertLossless(formic)
+    expect(relErr(Number(formic.x), 0.002911349696386611)).toBeLessThan(1e-10)
+    expect(Math.abs(Number(formic.pH) - 2.5359056262033444)).toBeLessThan(1e-9)
+    expect(relErr((formic.approximation as { errorPercent: number }).errorPercent, 3.0449898795536843)).toBeLessThan(1e-9)
+
+    const ammonia = await executeEquilibrium({ mode: 'weak_base', k: 1.8e-5, concentration: 0.1 })
+    assertLossless(ammonia)
+    expect(relErr(Number(ammonia.ohConc), 0.001332670973077975)).toBeLessThan(1e-10)
+    expect(Math.abs(Number(ammonia.pOH) - 2.8752770615501357)).toBeLessThan(1e-9)
+    expect(Math.abs(Number(ammonia.pH) - 11.124722938449864)).toBeLessThan(1e-9)
+    expect(relErr(Number(ammonia.hConc), 7.50372762821097e-12)).toBeLessThan(1e-10)
+  })
+
+  it('flags the shortcut once it is off by more than 5 %', async () => {
+    const veryDilute = await executeEquilibrium({ mode: 'weak_base', k: 1.8e-5, concentration: 0.001 })
+    assertLossless(veryDilute)
+    expect(Math.abs(Number(veryDilute.pH) - 10.098524698929491)).toBeLessThan(1e-9)
+    expect(relErr((veryDilute.approximation as { errorPercent: number }).errorPercent, 6.932951375433835)).toBeLessThan(1e-9)
+    expect(String(veryDilute.note)).toContain('use the quadratic answer')
+  })
+
+  it('rejects non-physical inputs instead of returning a number', async () => {
+    const zeroK = await executeEquilibrium({ mode: 'weak_acid', k: 0, concentration: 0.1 })
+    expect(zeroK.valid).toBe(false)
+    expect(String(zeroK.error)).toContain('k must be positive')
+
+    const zeroC = await executeEquilibrium({ mode: 'weak_acid', k: 1.8e-5, concentration: 0 })
+    expect(zeroC.valid).toBe(false)
+    expect(String(zeroC.error)).toContain('concentration must be positive')
+
+    // Non-finite numbers never reach the implementation: the schema layer rejects them first.
+    await expect(executeEquilibrium({ mode: 'weak_acid', k: Number.NaN, concentration: 0.1 })).rejects.toThrow()
+
+    // And so is an out-of-enum mode.
+    await expect(executeEquilibrium({ mode: 'strong_acid' as 'weak_acid', k: 1.8e-5, concentration: 0.1 }))
+      .rejects.toThrow()
+    // The module-level guard still reports it as an error for direct callers.
+    const direct = weakEquilibrium({ mode: 'strong_acid' as 'weak_acid', k: 1.8e-5, concentration: 0.1 })
+    expect(direct.ok).toBe(false)
+    if (!direct.ok) expect(direct.error).toContain('unknown mode')
+  })
+
+  it('render text shows both the exact answer and the shortcut', async () => {
+    const result = await executeEquilibrium({ mode: 'weak_base', k: 1.8e-5, concentration: 0.001 })
+    const output = tools.equilibrium.output as unknown as {
+      render: (args: unknown, value: unknown) => { type: string, text: string }[]
+    }
+    const text = output.render({}, result).map((part) => part.text).join('\n')
+    expect(text).toContain('Kb =')
+    expect(text).toContain('√(K·C) shortcut would give')
+    expect(text).toContain('back-check')
   })
 })

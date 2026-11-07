@@ -11,6 +11,12 @@
 export declare const AVOGADRO = 6.02214076e+23;
 /** Water autoionization constant at 25 °C (mol²/L²). */
 export declare const KW_25C = 1e-14;
+/**
+ * Round a result for output and fold `-0` into `0` (JSON round-trips treat
+ * `-0` as a different value). Significant-digit based, applied only at the
+ * output boundary — never mid-computation.
+ */
+export declare function roundOut(value: number, digits?: number): number;
 export interface ElementCount {
     symbol: string;
     count: number;

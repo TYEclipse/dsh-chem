@@ -8,6 +8,8 @@
 
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { balanceEquation, renderBalancedEquation } from './balance.ts'
+import { compositionToFormula } from './formula.ts'
+import { weakEquilibrium } from './equil.ts'
 import { stoichiometry, type StoichResult } from './stoich.ts'
 import {
   idealGas,
@@ -39,6 +41,8 @@ export interface ToolSet {
   balance_equation: ToolDefinition
   gas_law: ToolDefinition
   stoichiometry: ToolDefinition
+  formula_from_composition: ToolDefinition
+  equilibrium: ToolDefinition
 }
 
 /** Output-facing shape of `stoichiometry` (undefined keys are never emitted). */
@@ -176,6 +180,52 @@ export interface GasLawResult {
   error?: string
 }
 
+export interface CompositionOut {
+  valid: boolean
+  mode?: string
+  empiricalFormula?: string
+  empiricalMolarMass?: number
+  multiplier?: number
+  maxDeviation?: number
+  exact?: boolean
+  elements?: {
+    symbol: string
+    massG: number
+    atomicMass: number
+    moles: number
+    ratio: number
+    subscript: number
+    massFraction: number
+  }[]
+  molecularFormula?: string
+  molecularMultiplier?: number
+  molecularExact?: boolean
+  measuredMolarMass?: number
+  impliedMolarMass?: number
+  molarMassErrorPercent?: number
+  note?: string
+  error?: string
+}
+
+export interface EquilibriumOut {
+  valid: boolean
+  mode?: string
+  constantK?: number
+  pK?: number
+  concentration?: number
+  x?: number
+  hConc?: number
+  ohConc?: number
+  pH?: number
+  pOH?: number
+  degreeOfDissociation?: number
+  percentDissociation?: number
+  approximation?: { x: number; errorPercent: number }
+  kFromResult?: number
+  note?: string
+  error?: string
+}
+
 function fmt(value: number): string {
   if (!Number.isFinite(value)) return String(value)
   if (value !== 0 && (Math.abs(value) >= 1e7 || Math.abs(value) < 1e-4)) {
@@ -280,6 +330,40 @@ function renderStoichiometry(value: unknown): string {
   if (v.percentYield !== undefined) {
     lines.push(`percent yield: ${fmt(v.percentYield)} % (measured ${fmt(v.actualYieldG!)} g)`)
   }
+  return lines.join('\n')
+}
+
+function renderComposition(value: unknown): string {
+  const v = value as CompositionOut
+  if (!v.valid) return `formula_from_composition failed: ${v.error}`
+  const lines: string[] = [`empirical formula: ${v.empiricalFormula}  (M = ${fmt(v.empiricalMolarMass!)} g/mol)`]
+  for (const e of v.elements!) {
+    lines.push(`  ${e.symbol.padEnd(3)} ${fmt(e.massG).padStart(10)} g  ${fmt(e.moles).padStart(10)} mol`
+      + `  ratio ${fmt(e.ratio).padStart(9)}  → ${e.subscript}  (${fmt(e.massFraction)} % of the formula)`)
+  }
+  lines.push(`integer multiplier: ${v.multiplier} (max deviation ${fmt(v.maxDeviation!)})`)
+  if (v.exact === false) lines.push('⚠️ the analysis does not support integer subscripts within tolerance')
+  if (v.molecularFormula !== undefined) {
+    lines.push(`molecular formula: ${v.molecularFormula}  (×${v.molecularMultiplier} of the empirical formula,`
+      + ` implied M = ${fmt(v.impliedMolarMass!)} g/mol vs measured ${fmt(v.measuredMolarMass!)} g/mol,`
+      + ` ${fmt(v.molarMassErrorPercent!)} % off)`)
+    if (v.molecularExact === false) lines.push('⚠️ the measured molar mass is not a whole multiple of the empirical mass')
+  }
+  if (v.note) lines.push(v.note)
+  return lines.join('\n')
+}
+
+function renderEquilibrium(value: unknown): string {
+  const v = value as EquilibriumOut
+  if (!v.valid) return `equilibrium failed: ${v.error}`
+  const label = v.mode === 'weak_base' ? 'Kb' : 'Ka'
+  const lines: string[] = [`${v.mode}: ${label} = ${fmt(v.constantK!)} (p${label} = ${fmt(v.pK!)}), C = ${fmt(v.concentration!)} mol/L`]
+  lines.push(`dissociated: x = ${fmt(v.x!)} mol/L (${fmt(v.percentDissociation!)} % of C)`)
+  lines.push(`[H+] = ${fmt(v.hConc!)} mol/L   [OH-] = ${fmt(v.ohConc!)} mol/L`)
+  lines.push(`pH = ${fmt(v.pH!)}   pOH = ${fmt(v.pOH!)}`)
+  lines.push(`√(K·C) shortcut would give x = ${fmt(v.approximation!.x)} (${fmt(v.approximation!.errorPercent)} % high)`)
+  lines.push(`back-check: x²/(C − x) = ${fmt(v.kFromResult!)} (must equal ${label})`)
+  if (v.note) lines.push(v.note)
   return lines.join('\n')
 }
 
@@ -1018,5 +1102,194 @@ export function buildChemTools(): ToolSet {
     },
   })
 
-  return { formula_mass, mass_moles, solution, ph, balance_equation, gas_law, stoichiometry: stoichiometry_tool }
+  const formula_from_composition_tool = defineTool({
+    name: 'formula_from_composition',
+    description: 'Empirical formula from an elemental analysis: give the mass percent (or the grams) of each '
+      + 'element and get the empirical formula, the integer multiplier used, and — when `molarMass` is given — the '
+      + 'molecular formula. This is the inverse of formula_mass and the arithmetic agents most often fumble: the '
+      + 'smallest mole ratio is not necessarily 1 (Fe2O3 needs ×2 from 1 : 1.5), a measured molar mass is only a '
+      + 'molecular formula if it is a whole multiple of the empirical mass, and a noisy analysis does not support '
+      + 'integer subscripts at all. Subscripts come from the smallest multiplier k in [1, 8] whose scaled ratios '
+      + 'are within ±0.05 of integers; when no k fits, the closest fit is returned with `exact: false` and a note '
+      + 'instead of a quietly rounded answer. Formulas are printed in Hill order (C, H, then alphabetical).',
+    parameters: {
+      mode: {
+        type: 'string',
+        required: true,
+        enum: ['percent', 'masses'],
+        description: '"percent" = the values are mass percentages (they must sum to 100 ± 1); "masses" = grams.',
+      },
+      parts: {
+        type: 'array',
+        required: true,
+        description: 'One entry per element: its symbol and the measured mass percent or mass in grams.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            symbol: { type: 'string', required: true, description: 'Element symbol, e.g. "C", "Fe", "Na".' },
+            value: { type: 'number', required: true, description: 'Mass percent (mode "percent") or grams (mode "masses"); must be > 0.' },
+          },
+        },
+      },
+      molarMass: { type: 'number', description: 'Measured molar mass in g/mol — when given, the molecular formula is reported too.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          mode: { type: 'string' },
+          empiricalFormula: { type: 'string' },
+          empiricalMolarMass: { type: 'number' },
+          multiplier: { type: 'number' },
+          maxDeviation: { type: 'number' },
+          exact: { type: 'boolean' },
+          elements: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                symbol: { type: 'string', required: true },
+                massG: { type: 'number', required: true },
+                atomicMass: { type: 'number', required: true },
+                moles: { type: 'number', required: true },
+                ratio: { type: 'number', required: true },
+                subscript: { type: 'number', required: true },
+                massFraction: { type: 'number', required: true },
+              },
+            },
+          },
+          molecularFormula: { type: 'string' },
+          molecularMultiplier: { type: 'number' },
+          molecularExact: { type: 'boolean' },
+          measuredMolarMass: { type: 'number' },
+          impliedMolarMass: { type: 'number' },
+          molarMassErrorPercent: { type: 'number' },
+          note: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderComposition(value) }],
+    },
+    async execute(args: {
+      mode: 'percent' | 'masses'
+      parts: { symbol: string; value: number }[]
+      molarMass?: number
+    }): Promise<CompositionOut> {
+      const result = compositionToFormula({ mode: args.mode, parts: args.parts ?? [], molarMass: args.molarMass })
+      if (!result.ok) return { valid: false, error: result.error }
+      const out: CompositionOut = {
+        valid: true,
+        mode: result.mode,
+        empiricalFormula: result.empiricalFormula,
+        empiricalMolarMass: result.empiricalMolarMass,
+        multiplier: result.multiplier,
+        maxDeviation: result.maxDeviation,
+        exact: result.exact,
+        elements: result.elements,
+      }
+      if (result.molecularFormula !== undefined) out.molecularFormula = result.molecularFormula
+      if (result.molecularMultiplier !== undefined) out.molecularMultiplier = result.molecularMultiplier
+      if (result.molecularExact !== undefined) out.molecularExact = result.molecularExact
+      if (result.measuredMolarMass !== undefined) out.measuredMolarMass = result.measuredMolarMass
+      if (result.impliedMolarMass !== undefined) out.impliedMolarMass = result.impliedMolarMass
+      if (result.molarMassErrorPercent !== undefined) out.molarMassErrorPercent = result.molarMassErrorPercent
+      if (result.note !== undefined) out.note = result.note
+      return out
+    },
+  })
+
+  const equilibrium_tool = defineTool({
+    name: 'equilibrium',
+    description: 'Weak acid / weak base equilibrium (ICE table) at 25 °C: give Ka (or Kb) and the formal '
+      + 'concentration and get the amount dissociated (x, the positive root of x² + K·x − K·C = 0 — evaluated in '
+      + 'the cancellation-free form 2KC/(K + √(K²+4KC))), [H+], [OH-], pH, pOH and the degree of dissociation. '
+      + 'It also reports what the √(K·C) shortcut would have said and by how much it overstates x, plus a '
+      + 'back-check K = x²/(C − x), so you can see when the approximation was not good enough (6.9 % off at '
+      + '0.001 M ammonia with Kb = 1.8e-5). Monoprotic acids/bases only; no activity coefficients, ionic strength '
+      + 'or polyprotic steps.',
+    parameters: {
+      mode: {
+        type: 'string',
+        required: true,
+        enum: ['weak_acid', 'weak_base'],
+        description: '"weak_acid" solves for [H+] (Ka); "weak_base" solves for [OH-] (Kb).',
+      },
+      k: { type: 'number', required: true, description: 'Ka (acid) or Kb (base), mol/L; must be > 0.' },
+      concentration: {
+        type: 'number',
+        required: true,
+        description: 'Formal (analytical) concentration of the acid/base in mol/L; must be > 0.',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          mode: { type: 'string' },
+          constantK: { type: 'number' },
+          pK: { type: 'number' },
+          concentration: { type: 'number' },
+          x: { type: 'number' },
+          hConc: { type: 'number' },
+          ohConc: { type: 'number' },
+          pH: { type: 'number' },
+          pOH: { type: 'number' },
+          degreeOfDissociation: { type: 'number' },
+          percentDissociation: { type: 'number' },
+          approximation: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              x: { type: 'number', required: true },
+              errorPercent: { type: 'number', required: true },
+            },
+          },
+          kFromResult: { type: 'number' },
+          note: { type: 'string' },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderEquilibrium(value) }],
+    },
+    async execute(args: { mode: 'weak_acid' | 'weak_base'; k: number; concentration: number }): Promise<EquilibriumOut> {
+      const result = weakEquilibrium({ mode: args.mode, k: args.k, concentration: args.concentration })
+      if (!result.ok) return { valid: false, error: result.error }
+      const out: EquilibriumOut = {
+        valid: true,
+        mode: result.mode,
+        constantK: result.constantK,
+        pK: result.pK,
+        concentration: result.concentration,
+        x: result.x,
+        hConc: result.hConc,
+        ohConc: result.ohConc,
+        pH: result.pH,
+        pOH: result.pOH,
+        degreeOfDissociation: result.degreeOfDissociation,
+        percentDissociation: result.percentDissociation,
+        approximation: result.approximation,
+        kFromResult: result.kFromResult,
+      }
+      if (result.note !== undefined) out.note = result.note
+      return out
+    },
+  })
+
+  return {
+    formula_mass,
+    mass_moles,
+    solution,
+    ph,
+    balance_equation,
+    gas_law,
+    stoichiometry: stoichiometry_tool,
+    formula_from_composition: formula_from_composition_tool,
+    equilibrium: equilibrium_tool,
+  }
 }

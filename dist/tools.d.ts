@@ -14,6 +14,8 @@ export interface ToolSet {
     balance_equation: ToolDefinition;
     gas_law: ToolDefinition;
     stoichiometry: ToolDefinition;
+    formula_from_composition: ToolDefinition;
+    equilibrium: ToolDefinition;
 }
 /** Output-facing shape of `stoichiometry` (undefined keys are never emitted). */
 export interface StoichiometryOut {
@@ -147,6 +149,53 @@ export interface GasLawResult {
     molarMass?: number;
     formula?: string;
     r?: number;
+    error?: string;
+}
+export interface CompositionOut {
+    valid: boolean;
+    mode?: string;
+    empiricalFormula?: string;
+    empiricalMolarMass?: number;
+    multiplier?: number;
+    maxDeviation?: number;
+    exact?: boolean;
+    elements?: {
+        symbol: string;
+        massG: number;
+        atomicMass: number;
+        moles: number;
+        ratio: number;
+        subscript: number;
+        massFraction: number;
+    }[];
+    molecularFormula?: string;
+    molecularMultiplier?: number;
+    molecularExact?: boolean;
+    measuredMolarMass?: number;
+    impliedMolarMass?: number;
+    molarMassErrorPercent?: number;
+    note?: string;
+    error?: string;
+}
+export interface EquilibriumOut {
+    valid: boolean;
+    mode?: string;
+    constantK?: number;
+    pK?: number;
+    concentration?: number;
+    x?: number;
+    hConc?: number;
+    ohConc?: number;
+    pH?: number;
+    pOH?: number;
+    degreeOfDissociation?: number;
+    percentDissociation?: number;
+    approximation?: {
+        x: number;
+        errorPercent: number;
+    };
+    kFromResult?: number;
+    note?: string;
     error?: string;
 }
 export declare function buildChemTools(): ToolSet;

@@ -12,6 +12,17 @@ import { elementBySymbolLenient } from "./periodic.js";
 export const AVOGADRO = 6.02214076e23;
 /** Water autoionization constant at 25 °C (mol²/L²). */
 export const KW_25C = 1.0e-14;
+/**
+ * Round a result for output and fold `-0` into `0` (JSON round-trips treat
+ * `-0` as a different value). Significant-digit based, applied only at the
+ * output boundary — never mid-computation.
+ */
+export function roundOut(value, digits = 12) {
+    if (!Number.isFinite(value))
+        return value;
+    const rounded = Number(value.toPrecision(digits));
+    return rounded === 0 ? 0 : rounded;
+}
 /** Hydrate separators accepted by the parser (middle dot and asterisk). */
 const HYDRATE_SEPARATORS = new Set(['·', '*', '•']);
 function isDigit(ch) {

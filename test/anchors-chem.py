@@ -566,6 +566,137 @@ for slug, eq, amounts, product, actual in STOICH_CASES:
         print(f'stoich.{slug}.percent.round12\t{y[4]:.12g}')
 
 # ---------------------------------------------------------------------------
+# formula_from_composition anchors (percent composition / masses -> empirical)
+# Independent of the TS implementation: own table, own Hill ordering, own
+# smallest-multiplier search. Published compositions are the ruler (water
+# 11.19 % H / 88.81 % O, glucose 40.00 / 6.71 / 53.29 with M = 180.156...).
+print()
+print('# --- formula_from_composition anchors ---')
+
+
+def _moles_from(comp, mode):
+    if mode == 'percent':
+        total = sum(comp.values())
+        if abs(total - 100.0) > 1.0:
+            raise SystemExit(f'percent sum {total} out of range')
+        grams = dict(comp)
+    else:
+        grams = dict(comp)
+    return {el: g / ATOMIC[el] for el, g in grams.items()}
+
+
+def _hill(atoms):
+    if 'C' in atoms:
+        order = ['C'] + (['H'] if 'H' in atoms else []) + sorted(el for el in atoms if el not in ('C', 'H'))
+    else:
+        order = sorted(atoms)
+    out = ''
+    for el in order:
+        n = atoms[el]
+        out += el if n == 1 else f'{el}{n}'
+    return out
+
+
+def empirical(comp, mode, molar_mass=None, tol=0.05, kmax=8):
+    moles = _moles_from(comp, mode)
+    mn = min(moles.values())
+    ratios = {el: m / mn for el, m in moles.items()}
+    best_k, best_dev = 1, None
+    exact = False
+    for k in range(1, kmax + 1):
+        dev = max(abs(r * k - round(r * k)) for r in ratios.values())
+        if best_dev is None or dev < best_dev - 1e-15:
+            best_k, best_dev = k, dev
+        if dev <= tol:
+            best_k, best_dev, exact = k, dev, True
+            break
+        # keep the smallest k on ties: only replace on a strictly smaller dev
+    atoms = {el: max(1, int(round(r * best_k))) for el, r in ratios.items()}
+    mass = sum(atoms[el] * ATOMIC[el] for el in atoms)
+    pct = {el: atoms[el] * ATOMIC[el] / mass * 100 for el in atoms}
+    rec = dict(atoms=atoms, kmult=best_k, dev=best_dev, exact=exact, formula=_hill(atoms),
+               mass=mass, pct=pct, moles=moles, ratios=ratios)
+    if molar_mass is not None:
+        n = molar_mass / mass
+        nearest = max(1, int(round(n)))
+        rel = abs(n - nearest) / nearest
+        rec.update(nmol=n, nearest=nearest, nrel=rel, nexact=rel <= 0.02,
+                   implied=nearest * mass, merr=abs(nearest * mass - molar_mass) / molar_mass * 100,
+                   molatoms={el: atoms[el] * nearest for el in atoms},
+                   molformula=_hill({el: atoms[el] * nearest for el in atoms}))
+    return rec
+
+
+COMP_CASES = [
+    ('water_percent', {'H': 11.19, 'O': 88.81}, 'percent', None),
+    ('glucose_percent', {'C': 40.00, 'H': 6.71, 'O': 53.29}, 'percent', 180.156),
+    ('benzene_percent', {'C': 92.26, 'H': 7.74}, 'percent', 78.11),
+    ('ethanol_percent', {'C': 52.14, 'H': 13.13, 'O': 34.73}, 'percent', 46.068),
+    ('iron_oxide_masses', {'Fe': 111.69, 'O': 47.997}, 'masses', None),
+    ('acetic_acid_masses', {'C': 24.022, 'H': 4.032, 'O': 31.998}, 'masses', 60.052),
+    ('noisy_ratio', {'C': 1.0, 'H': 1.0}, 'masses', None),
+    ('h_only', {'H': 1.008}, 'masses', None),
+]
+for slug, comp, mode, mm in COMP_CASES:
+    r = empirical(comp, mode, mm)
+    print(f'comp.{slug}.formula\t{r["formula"]}\tk={r["kmult"]}\tdev={r["dev"]!r}\texact={r["exact"]}')
+    print(f'comp.{slug}.mass\t{r["mass"]!r}')
+    for el in sorted(r['atoms']):
+        print(f'comp.{slug}.atoms.{el}\tcount={r["atoms"][el]}\tmoles={r["moles"][el]!r}'
+              f'\tratio={r["ratios"][el]!r}\tpct={r["pct"][el]!r}')
+    if 'molformula' in r:
+        print(f'comp.{slug}.molecular\t{r["molformula"]}\tn={r["nearest"]}\tnrel={r["nrel"]!r}'
+              f'\tnmoles={r["nmol"]!r}\texact={r["nexact"]}\timplied={r["implied"]!r}\tmerr={r["merr"]!r}')
+
+# ---------------------------------------------------------------------------
+# equilibrium anchors (weak acid / weak base ICE, exact quadratic)
+# Independent of the TS implementation: the positive root of x^2 + K x - K C = 0
+# written out by hand, pH from the definition. Published textbook values are the
+# ruler (0.1 M acetic acid pH 2.87, 0.1 M ammonia pH 11.13).
+print()
+print('# --- equilibrium anchors (weak acid / weak base ICE) ---')
+KW = 1.0e-14
+
+
+def weak_x(k, c):
+    return (-k + math.sqrt(k * k + 4.0 * k * c)) / 2.0
+
+
+def weak_case(kind, k, c):
+    x = weak_x(k, c)
+    pK = -math.log10(k)
+    if kind == 'weak_acid':
+        h, oh = x, KW / x
+        pH = -math.log10(h)
+        pOH = -math.log10(oh)
+    else:
+        oh, h = x, KW / x
+        pOH = -math.log10(oh)
+        pH = -math.log10(h)
+    alpha = x / c
+    approx = math.sqrt(k * c)
+    return dict(kind=kind, k=k, c=c, x=x, pK=pK, h=h, oh=oh, pH=pH, pOH=pOH, alpha=alpha,
+                approx=approx, approx_err=(approx - x) / x * 100.0,
+                k_back=x * x / (c - x), oh_from_kw=KW / h)
+
+
+EQUIL_CASES = [
+    ('acetic_0.1', 'weak_acid', 1.8e-5, 0.1),
+    ('acetic_0.01', 'weak_acid', 1.8e-5, 0.01),
+    ('acetic_1.0', 'weak_acid', 1.8e-5, 1.0),
+    ('formic_0.05', 'weak_acid', 1.8e-4, 0.05),
+    ('ammonia_0.1', 'weak_base', 1.8e-5, 0.1),
+    ('ammonia_0.001', 'weak_base', 1.8e-5, 0.001),
+]
+for slug, kind, k, c in EQUIL_CASES:
+    r = weak_case(kind, k, c)
+    print(f'eq.{slug}\tkind={kind}\tk={r["k"]!r}\tc={r["c"]!r}\tx={r["x"]!r}\tpK={r["pK"]!r}')
+    print(f'eq.{slug}.conc\tH={r["h"]!r}\tOH={r["oh"]!r}\tpH={r["pH"]!r}\tpOH={r["pOH"]!r}')
+    print(f'eq.{slug}.alpha\talpha={r["alpha"]!r}\tpercent={r["alpha"] * 100!r}')
+    print(f'eq.{slug}.approx\tx={r["approx"]!r}\terr={r["approx_err"]!r}')
+    print(f'eq.{slug}.check\tk_back={r["k_back"]!r}\toh_from_kw={r["oh_from_kw"]!r}')
+
+# ---------------------------------------------------------------------------
 # --check: self-verification. The ruler must be OUTSIDE this file's own maths
 # (published textbook values + definitional identities) — an oracle that only
 # agrees with the implementation would pass even when both are wrong (R63).
@@ -624,13 +755,64 @@ def self_check():
     check('1 mol Zn mass', r_zn[0][3] * r_zn[0][2], 65.38, 0.02)
     check('1 mol H2 mass', [p for p in p_h2 if p[0] == 'H2'][0][4], 2.016, 0.01)
 
+    # --- composition: published formulas are the ruler (percent data from the
+    # textbook analyses of water / glucose / benzene / ethanol, masses for the
+    # oxides and acetic acid) ---
+    for slug, comp, mode, mm, want_formula, want_mol in [
+        ('water', {'H': 11.19, 'O': 88.81}, 'percent', None, 'H2O', None),
+        ('glucose', {'C': 40.00, 'H': 6.71, 'O': 53.29}, 'percent', 180.156, 'CH2O', 'C6H12O6'),
+        ('benzene', {'C': 92.26, 'H': 7.74}, 'percent', 78.11, 'CH', 'C6H6'),
+        ('ethanol', {'C': 52.14, 'H': 13.13, 'O': 34.73}, 'percent', 46.068, 'C2H6O', 'C2H6O'),
+        ('iron_oxide', {'Fe': 111.69, 'O': 47.997}, 'masses', None, 'Fe2O3', None),
+        ('acetic_acid', {'C': 24.022, 'H': 4.032, 'O': 31.998}, 'masses', 60.052, 'CH2O', 'C2H4O2'),
+    ]:
+        r = empirical(comp, mode, mm)
+        if r['formula'] != want_formula or not r['exact']:
+            failures.append(f'composition {slug}: {r["formula"]} (exact={r["exact"]}) != {want_formula}')
+        if want_mol is not None and r.get('molformula') != want_mol:
+            failures.append(f'composition {slug}: molecular {r.get("molformula")} != {want_mol}')
+        # invariant: the round trip must reproduce the input percentages
+        if mode == 'percent':
+            for el, given in comp.items():
+                check(f'composition {slug} pct {el}', r['pct'][el], given, 0.5)
+        # invariant: empirical subscripts are coprime by construction
+        g = 0
+        for n in r['atoms'].values():
+            g = math.gcd(g, n)
+        if g != 1:
+            failures.append(f'composition {slug}: subscripts not coprime (gcd {g})')
+        if want_mol is not None and abs(r['nearest'] * r['mass'] - mm) / mm > 0.02:
+            failures.append(f'composition {slug}: molecular multiplier off by {r["merr"]:.3f} %')
+    noisy = empirical({'C': 1.0, 'H': 1.0}, 'masses')
+    if noisy['exact']:
+        failures.append('composition noisy_ratio: must be flagged inexact (dev 0.084 > 0.05)')
+
+    # --- equilibrium: definitional identity x^2/(C-x) = K and published pH ---
+    for kind, k, c, want_pH in [
+        ('weak_acid', 1.8e-5, 0.1, 2.87),
+        ('weak_acid', 1.8e-4, 0.05, 2.54),
+        ('weak_base', 1.8e-5, 0.1, 11.13),
+    ]:
+        r = weak_case(kind, k, c)
+        if abs(r['k_back'] - k) > 1e-9 * k:
+            failures.append(f'equilibrium {kind} {c}: x^2/(C-x) = {r["k_back"]!r} != K {k!r}')
+        check(f'equilibrium pH {kind} {c} M', r['pH'], want_pH, 0.01)
+        if not (0 < r['x'] < c):
+            failures.append(f'equilibrium {kind} {c}: x={r["x"]!r} outside (0, C)')
+    errs = [(c, weak_case('weak_acid', 1.8e-5, c)['approx_err']) for c in (0.01, 0.1, 1.0)]
+    for (c1, e1), (c2, e2) in zip(errs, errs[1:]):
+        if not e2 < e1:
+            failures.append(f'equilibrium: sqrt(KC) error not decreasing ({c1}: {e1:.3f} %, {c2}: {e2:.3f} %)')
+
     if failures:
         print('SELF-CHECK FAILED')
         for line in failures:
             print('  [x]', line)
         return 1
     print('SELF-CHECK OK: 8 published molar masses, 2 textbook balances, R/molar volume, '
-          'pH definition, 7 stoichiometry cases (mass conservation + leftover bounds)')
+          'pH definition, 7 stoichiometry cases (mass conservation + leftover bounds), '
+          '6 published compositions (empirical + molecular formulas), '
+          '3 published weak acid/base pH values + x^2/(C-x) == K')
     return 0
 
 

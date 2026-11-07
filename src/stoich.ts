@@ -10,7 +10,7 @@
  */
 
 import { balanceEquation } from './balance.ts'
-import { formulaMass, parseFormula } from './core.ts'
+import { formulaMass, parseFormula, roundOut } from './core.ts'
 
 export interface StoichInput {
   equation: string
@@ -58,13 +58,7 @@ export type StoichResult =
     }
   | { ok: false; error: string }
 
-/** Fold `-0` and binary-noise tails at the output boundary (never mid-computation). */
-function roundOut(value: number, digits = 12): number {
-  if (!Number.isFinite(value)) return value
-  const r = Number(value.toPrecision(digits))
-  return r === 0 ? 0 : r
-}
-
+/** Molar mass of one species, or an error string. */
 function molarMassOf(formula: string): number | { error: string } {
   const parsed = parseFormula(formula)
   if (!parsed.ok) return { error: parsed.error }
