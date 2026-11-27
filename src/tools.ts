@@ -10,6 +10,7 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { balanceEquation, renderBalancedEquation } from './balance.ts'
 import { compositionToFormula } from './formula.ts'
 import { weakEquilibrium } from './equil.ts'
+import { kspSolubility } from './ksp.ts'
 import { stoichiometry, type StoichResult } from './stoich.ts'
 import {
   idealGas,
@@ -43,6 +44,7 @@ export interface ToolSet {
   stoichiometry: ToolDefinition
   formula_from_composition: ToolDefinition
   equilibrium: ToolDefinition
+  ksp_solubility: ToolDefinition
 }
 
 /** Output-facing shape of `stoichiometry` (undefined keys are never emitted). */
@@ -226,6 +228,34 @@ export interface EquilibriumOut {
   error?: string
 }
 
+/** Output-facing shape of `ksp_solubility` (undefined keys are never emitted). */
+export interface KspOut {
+  valid: boolean
+  formula?: string
+  ksp?: number
+  pKsp?: number
+  cation?: { symbol: string; charge: number; count: number; concentration: number }
+  anion?: { symbol: string; charge: number; count: number; concentration: number }
+  stoichiometricFactor?: number
+  ionCount?: number
+  expression?: string
+  molarMass?: number
+  molarSolubility?: number
+  massSolubility?: number
+  chargeBalance?: number
+  commonIon?: {
+    symbol: string
+    concentration: number
+    molarSolubility: number
+    massSolubility: number
+    reductionFactor: number
+    residual: number
+  }
+  notes?: string[]
+  candidates?: string[]
+  error?: string
+}
+
 function fmt(value: number): string {
   if (!Number.isFinite(value)) return String(value)
   if (value !== 0 && (Math.abs(value) >= 1e7 || Math.abs(value) < 1e-4)) {
@@ -364,6 +394,31 @@ function renderEquilibrium(value: unknown): string {
   lines.push(`√(K·C) shortcut would give x = ${fmt(v.approximation!.x)} (${fmt(v.approximation!.errorPercent)} % high)`)
   lines.push(`back-check: x²/(C − x) = ${fmt(v.kFromResult!)} (must equal ${label})`)
   if (v.note) lines.push(v.note)
+  return lines.join('\n')
+}
+
+function renderKsp(value: unknown): string {
+  const v = value as KspOut
+  if (!v.valid) {
+    const lines = [`ksp_solubility failed: ${v.error}`]
+    if (v.candidates && v.candidates.length > 0) lines.push(`candidates: ${v.candidates.join(' | ')}`)
+    return lines.join('\n')
+  }
+  const lines: string[] = [
+    `${v.formula}: ${v.cation!.count} ${v.cation!.symbol} + ${v.anion!.count} ${v.anion!.symbol}`
+    + ` (charge balance ${fmt(v.chargeBalance!)}), Ksp = ${fmt(v.ksp!)} (pKsp = ${fmt(v.pKsp!)})`,
+  ]
+  lines.push(v.expression!)
+  lines.push(`molar solubility: ${fmt(v.molarSolubility!)} mol/L (${fmt(v.massSolubility!)} g/L, M = ${fmt(v.molarMass!)} g/mol)`)
+  lines.push(`at saturation: [${v.cation!.symbol}] = ${fmt(v.cation!.concentration!)} mol/L, [${v.anion!.symbol}] = ${fmt(v.anion!.concentration!)} mol/L`)
+  if (v.commonIon) {
+    const c = v.commonIon
+    lines.push(
+      `common ion ${c.symbol} at ${fmt(c.concentration)} mol/L: solubility drops to ${fmt(c.molarSolubility)} mol/L `
+      + `(${fmt(c.reductionFactor)}× less), ${fmt(c.massSolubility)} g/L`,
+    )
+  }
+  for (const note of v.notes ?? []) lines.push(note)
   return lines.join('\n')
 }
 
@@ -1281,6 +1336,120 @@ export function buildChemTools(): ToolSet {
     },
   })
 
+  const ksp_solubility_tool = defineTool({
+    name: 'ksp_solubility',
+    description: 'Solubility product (Ksp) → molar solubility, with the ion grouping made explicit. Give a salt '
+      + 'formula and its Ksp and get the ions it breaks into (with counts and charges), the printed Ksp expression '
+      + '(e.g. Ca3(PO4)2 → (3s)³(2s)² = 108·s⁵), molar solubility in mol/L and g/L, and the ion concentrations at '
+      + 'saturation. Optionally pass a common ion already present (commonIon + commonIonConcentration) and it solves '
+      + 'the shifted equilibrium numerically instead of pretending the answer is unchanged. The grouping is verified, '
+      + 'not guessed: a formula that matches two different ion splits (Hg2Cl2 is both Hg2²⁺·2Cl⁻ and 2Hg⁺·2Cl⁻) is '
+      + 'reported as ambiguous with the candidates, and hydrates or charged formulas are rejected with the reason.',
+    parameters: {
+      formula: { type: 'string', required: true, description: 'Neutral salt formula, e.g. "AgCl", "Ca(OH)2", "Ca3(PO4)2".' },
+      ksp: { type: 'number', required: true, description: 'Solubility product at the temperature it was measured, mol/L units as tabulated; must be > 0.' },
+      cation: { type: 'string', description: 'Force the cation when the split is ambiguous, e.g. "Hg^2+", "Ca2+", "NH4+".' },
+      anion: { type: 'string', description: 'Force the anion when the split is ambiguous, e.g. "Cl-", "PO4^3-".' },
+      commonIon: { type: 'string', description: 'One of the salt\'s own ions already present, e.g. "Cl-" for AgCl in brine.' },
+      commonIonConcentration: { type: 'number', description: 'Concentration of that common ion in mol/L; required with commonIon.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          formula: { type: 'string' },
+          ksp: { type: 'number' },
+          pKsp: { type: 'number' },
+          cation: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              symbol: { type: 'string', required: true },
+              charge: { type: 'number', required: true },
+              count: { type: 'number', required: true },
+              concentration: { type: 'number', required: true },
+            },
+          },
+          anion: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              symbol: { type: 'string', required: true },
+              charge: { type: 'number', required: true },
+              count: { type: 'number', required: true },
+              concentration: { type: 'number', required: true },
+            },
+          },
+          stoichiometricFactor: { type: 'number' },
+          ionCount: { type: 'number' },
+          expression: { type: 'string' },
+          molarMass: { type: 'number' },
+          molarSolubility: { type: 'number' },
+          massSolubility: { type: 'number' },
+          chargeBalance: { type: 'number' },
+          commonIon: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              symbol: { type: 'string', required: true },
+              concentration: { type: 'number', required: true },
+              molarSolubility: { type: 'number', required: true },
+              massSolubility: { type: 'number', required: true },
+              reductionFactor: { type: 'number', required: true },
+              residual: { type: 'number', required: true },
+            },
+          },
+          notes: { type: 'array', items: { type: 'string' } },
+          candidates: { type: 'array', items: { type: 'string' } },
+          error: { type: 'string' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => [{ type: 'text', text: renderKsp(value) }],
+    },
+    async execute(args: {
+      formula: string
+      ksp: number
+      cation?: string
+      anion?: string
+      commonIon?: string
+      commonIonConcentration?: number
+    }): Promise<KspOut> {
+      const result = kspSolubility({
+        formula: args.formula,
+        ksp: args.ksp,
+        cation: args.cation,
+        anion: args.anion,
+        commonIon: args.commonIon,
+        commonIonConcentration: args.commonIonConcentration,
+      })
+      if (!result.ok) {
+        const out: KspOut = { valid: false, error: result.error }
+        if (result.candidates !== undefined) out.candidates = result.candidates
+        return out
+      }
+      const out: KspOut = {
+        valid: true,
+        formula: result.formula,
+        ksp: result.ksp,
+        pKsp: result.pKsp,
+        cation: result.cation,
+        anion: result.anion,
+        stoichiometricFactor: result.stoichiometricFactor,
+        ionCount: result.ionCount,
+        expression: result.expression,
+        molarMass: result.molarMass,
+        molarSolubility: result.molarSolubility,
+        massSolubility: result.massSolubility,
+        chargeBalance: result.chargeBalance,
+        notes: result.notes,
+      }
+      if (result.commonIon !== undefined) out.commonIon = result.commonIon
+      return out
+    },
+  })
+
   return {
     formula_mass,
     mass_moles,
@@ -1291,5 +1460,6 @@ export function buildChemTools(): ToolSet {
     stoichiometry: stoichiometry_tool,
     formula_from_composition: formula_from_composition_tool,
     equilibrium: equilibrium_tool,
+    ksp_solubility: ksp_solubility_tool,
   }
 }

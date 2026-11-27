@@ -2,7 +2,7 @@
 
 Deterministic chemistry math for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`) — **zero runtime dependencies**, pure arithmetic over IUPAC data.
 
-> 中文简介：化学计量数学工具箱。七个零依赖确定性工具——化学式解析与摩尔质量（支持嵌套括号、结晶水、离子电荷）、质量/摩尔/粒子数换算、溶液浓度（摩尔浓度、稀释 C1V1=C2V2、百分比浓度）、pH/pOH 与缓冲溶液、配平化学方程式（精确有理数运算，含电荷守恒）、理想气体定律（PV=nRT 求解、摩尔体积、气体密度与由密度反推摩尔质量）。专门替代 LLM 高频出错的化学心算。
+> 中文简介：化学计量数学工具箱。十个零依赖确定性工具——化学式解析与摩尔质量（支持嵌套括号、结晶水、离子电荷）、质量/摩尔/粒子数换算、溶液浓度（摩尔浓度、稀释 C1V1=C2V2、百分比浓度）、pH/pOH 与缓冲溶液、配平化学方程式（精确有理数运算，含电荷守恒）、理想气体定律（PV=nRT 求解、摩尔体积、气体密度与由密度反推摩尔质量）、限量试剂与产率、元素分析反推化学式、弱酸弱碱 ICE 平衡、溶度积 Ksp 求摩尔溶解度（含同离子效应）。专门替代 LLM 高频出错的化学心算。
 
 ## Why this plugin
 
@@ -256,6 +256,54 @@ shortcut would have said.
 - **`weak_base` mirrors it** — Kb solves for `[OH-]`, then `pH` comes from Kw = 1e-14 at 25 °C.
 - **Scope, stated plainly** — monoprotic acids/bases, no activity coefficients, no ionic strength, no
   polyprotic steps, no temperature dependence.
+
+---
+### `ksp_solubility` — solubility product → molar solubility
+
+`√Ksp` is the easy part. The hard part is which ions the formula breaks into: `Ca(OH)2` is one Ca²⁺ and
+two OH⁻ (so `Ksp = (s)(2s)² = 4s³`), and `Ca3(PO4)2` is `Ksp = (3s)³(2s)² = 108·s⁵` — a different
+exponent *and* a different constant. Getting the grouping wrong changes the answer silently.
+
+```json
+{ "formula": "AgCl", "ksp": 1.8e-10 }
+```
+
+```json
+{
+  "valid": true,
+  "formula": "AgCl",
+  "ksp": 1.8e-10,
+  "pKsp": 9.744727495,
+  "cation": { "symbol": "Ag^+", "charge": 1, "count": 1, "concentration": 1.3416407864998738e-5 },
+  "anion": { "symbol": "Cl^-", "charge": -1, "count": 1, "concentration": 1.3416407864998738e-5 },
+  "stoichiometricFactor": 1,
+  "ionCount": 2,
+  "expression": "Ksp = [Ag^+]·[Cl^-] = s·s = s^2",
+  "molarMass": 143.32,
+  "molarSolubility": 1.3416407864998738e-5,
+  "massSolubility": 0.00192283957521,
+  "chargeBalance": 0,
+  "notes": ["Ksp is used exactly as supplied; it is temperature dependent and this tool does not interpolate it"]
+}
+```
+
+- **The grouping is verified, not guessed** — the formula is split into a cation half and an anion half,
+  each half must match a known ion (composition *and* charge), and the candidate must be electroneutral.
+  A formula that admits two readings is **refused with both candidates listed**, not resolved by
+  preference: `Hg2Cl2` is `1 Hg2^2+ + 2 Cl^-` in solution chemistry and `2 Hg^+ + 2 Cl^-` in elementary
+  texts, and those give different answers (`4s³` vs `16s⁴`). Pass `cation` (e.g. `"Hg2^2+"`) to choose.
+- **The expression is printed** — `Ksp = [Ca^2+]^3·[PO4^3-]^2 = (3s)·(2s) = 108·s^5` is in the output so a
+  reader can check the exponent and the constant without redoing the algebra.
+- **Common-ion effect is solved, not approximated** — give `commonIon` + `commonIonConcentration` and the
+  shifted equilibrium `(a·s + C)^a (b·s)^b = Ksp` is solved numerically (bisection), with the residual of
+  its own back-substitution reported (`residual`, must be ~1e-16) and the reduction factor next to the
+  plain-water solubility. AgCl in 0.01 M Cl⁻: 1.34e-5 → 1.80e-8 mol/L, 745× less.
+- **Refusals name the reason** — hydrates (`Ksp` describes the anhydrous solid), charged or
+  coefficient-prefixed formulas, mixed-valence oxides like `Fe3O4` that no ion pair reconstructs, and an
+  ion that is not in the table all come back as `valid: false` with the reason and, where useful, the
+  override hint.
+- **Scope, stated plainly** — ideal solutions: no activity coefficients, no ionic strength, no hydrolysis,
+  no complex formation, no temperature interpolation.
 
 ## Install
 

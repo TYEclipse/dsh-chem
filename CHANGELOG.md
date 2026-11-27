@@ -2,6 +2,10 @@
 
 > 版本口径：patch 修 bug/补测试｜minor 新增用户可见功能｜major 破坏性变更。安装：`dsh plugin --profile web add github:TYEclipse/dsh-chem`
 
+## [0.5.0] — 2026-11-28
+### Minor · R113
+- [自主进化] R113 新增 ksp_solubility（Ksp→摩尔溶解度：离子分组核验 + 同离子效应数值解）
+
 ## [0.4.0] — 2026-11-08
 ### Minor · R93
 - [自主进化] R93 新增 formula_from_composition（元素分析→实验式/分子式）与 equilibrium（弱酸弱碱 ICE 精确二次方程，附 √(K·C) 高估百分比与回代自检）

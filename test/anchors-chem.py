@@ -697,6 +697,171 @@ for slug, kind, k, c in EQUIL_CASES:
     print(f'eq.{slug}.check\tk_back={r["k_back"]!r}\toh_from_kw={r["oh_from_kw"]!r}')
 
 # ---------------------------------------------------------------------------
+# ksp anchors (Ksp -> molar solubility, ion grouping, common-ion effect)
+# Independent of the TS implementation: the salt is matched against the ion
+# table by ELEMENT COUNTS (a*cat + b*an == salt) instead of splitting the
+# parsed group list, and the common-ion case is solved by Newton iteration on
+# the residual instead of bisection. Published handbook values are the ruler
+# (AgCl 1.8e-10 -> 1.3e-5 M, Ca(OH)2 5.5e-6 -> 1.1e-2 M, PbCl2 1.7e-5 ->
+# 1.6e-2 M, Ag2CrO4 1.1e-12 -> 6.5e-5 M).
+print()
+print('# --- ksp anchors (solubility product -> molar solubility) ---')
+
+KS_CATIONS = [
+    ('Li^+', 1, 'Li'), ('Na^+', 1, 'Na'), ('K^+', 1, 'K'), ('Rb^+', 1, 'Rb'), ('Cs^+', 1, 'Cs'),
+    ('Ag^+', 1, 'Ag'), ('Cu^+', 1, 'Cu'), ('Hg^+', 1, 'Hg'), ('NH4^+', 1, 'NH4'),
+    ('Be^2+', 2, 'Be'), ('Mg^2+', 2, 'Mg'), ('Ca^2+', 2, 'Ca'), ('Sr^2+', 2, 'Sr'), ('Ba^2+', 2, 'Ba'),
+    ('Zn^2+', 2, 'Zn'), ('Cd^2+', 2, 'Cd'), ('Hg^2+', 2, 'Hg'), ('Hg2^2+', 2, 'Hg2'),
+    ('Cu^2+', 2, 'Cu'), ('Fe^2+', 2, 'Fe'), ('Co^2+', 2, 'Co'), ('Ni^2+', 2, 'Ni'), ('Mn^2+', 2, 'Mn'),
+    ('Pb^2+', 2, 'Pb'), ('Sn^2+', 2, 'Sn'),
+    ('Al^3+', 3, 'Al'), ('Ga^3+', 3, 'Ga'), ('In^3+', 3, 'In'), ('Cr^3+', 3, 'Cr'), ('Fe^3+', 3, 'Fe'),
+    ('Bi^3+', 3, 'Bi'),
+    ('Sn^4+', 4, 'Sn'),
+]
+KS_ANIONS = [
+    ('F^-', -1, 'F'), ('Cl^-', -1, 'Cl'), ('Br^-', -1, 'Br'), ('I^-', -1, 'I'), ('OH^-', -1, 'OH'),
+    ('NO3^-', -1, 'NO3'), ('NO2^-', -1, 'NO2'), ('HCO3^-', -1, 'CHO3'), ('HSO4^-', -1, 'HSO4'),
+    ('H2PO4^-', -1, 'H2PO4'), ('ClO^-', -1, 'ClO'), ('ClO3^-', -1, 'ClO3'), ('ClO4^-', -1, 'ClO4'),
+    ('MnO4^-', -1, 'MnO4'), ('CN^-', -1, 'CN'), ('SCN^-', -1, 'CNS'), ('CH3COO^-', -1, 'C2H3O2'),
+    ('IO3^-', -1, 'IO3'), ('BrO3^-', -1, 'BrO3'),
+    ('O^2-', -2, 'O'), ('S^2-', -2, 'S'), ('Se^2-', -2, 'Se'), ('O2^2-', -2, 'O2'),
+    ('SO4^2-', -2, 'SO4'), ('SO3^2-', -2, 'SO3'), ('S2O3^2-', -2, 'S2O3'), ('CO3^2-', -2, 'CO3'),
+    ('HPO4^2-', -2, 'HPO4'), ('C2O4^2-', -2, 'C2O4'), ('CrO4^2-', -2, 'CrO4'), ('Cr2O7^2-', -2, 'Cr2O7'),
+    ('SiO3^2-', -2, 'SiO3'),
+    ('PO4^3-', -3, 'PO4'), ('PO3^3-', -3, 'PO3'), ('AsO4^3-', -3, 'AsO4'),
+]
+
+
+def _ion_counts(formula):
+    _m, counts, _h, charge, _c = parse_formula(formula)
+    if charge is not None:
+        raise ValueError(f'ion formula {formula} must be neutral')
+    return counts
+
+
+KS_IONS = ([('cat', label, q, _ion_counts(f)) for label, q, f in KS_CATIONS]
+           + [('an', label, q, _ion_counts(f)) for label, q, f in KS_ANIONS])
+
+
+def _dicts_add(a, b):
+    out = dict(a)
+    for k, v in b.items():
+        out[k] = out.get(k, 0) + v
+    return out
+
+
+def _scaled(counts, k):
+    return {s: v * k for s, v in counts.items()}
+
+
+def ksp_groupings(salt):
+    """Every (cation, count, anion, count) whose ions reconstruct the salt exactly."""
+    _m, salt_counts, hydrate, charge, coeff = parse_formula(salt)
+    if hydrate is not None or charge is not None or coeff is not None:
+        raise ValueError(f'{salt} is not a plain neutral formula')
+    found = []
+    for kind_c, label_c, qc, comp_c in KS_IONS:
+        if kind_c != 'cat':
+            continue
+        for kind_a, label_a, qa, comp_a in KS_IONS:
+            if kind_a != 'an':
+                continue
+            for a in range(1, 13):
+                # electroneutrality fixes b for each a
+                num = a * qc
+                if num % (-qa) != 0:
+                    continue
+                b = num // (-qa)
+                if b < 1 or b > 12:
+                    continue
+                if _dicts_add(_scaled(comp_c, a), _scaled(comp_a, b)) == salt_counts:
+                    found.append((label_c, a, label_a, b, comp_c, comp_a))
+    return found, salt_counts
+
+
+def ksp_case(salt, ksp, common=None, common_c=None, force_cation=None, force_anion=None) -> dict:
+    found, salt_counts = ksp_groupings(salt)
+    if force_cation is not None or force_anion is not None:
+        found = [f for f in found
+                 if (force_cation is None or f[0] == force_cation)
+                 and (force_anion is None or f[2] == force_anion)]
+    if len(found) != 1:
+        raise ValueError(f'{salt}: expected exactly one grouping, got {[f[:4] for f in found]}')
+    label_c, a, label_a, b, _cc, _ca = found[0]
+    qc = [q for k, l, q, _ in KS_IONS if k == 'cat' and l == label_c][0]
+    qa = [q for k, l, q, _ in KS_IONS if k == 'an' and l == label_a][0]
+    factor = (a ** a) * (b ** b)
+    order = a + b
+    s = (ksp / factor) ** (1.0 / order)
+    mass = parse_formula(salt)[0]
+    out = dict(salt=salt, ksp=ksp, cation=label_c, a=a, anion=label_a, b=b,
+               charge_balance=a * qc + b * qa, factor=factor, order=order,
+               s=s, mass_solubility=s * mass, molar_mass=mass,
+               cat_conc=a * s, an_conc=b * s, common=None)
+    if common is not None:
+        # Newton on f(s) = (cat-side)(an-side) - Ksp, starting from Ksp/C.
+        cation_is_common = (common == label_c)
+        present = common_c
+
+        def f(x):
+            cat = a * x + (present if cation_is_common else 0.0)
+            an = b * x + (0.0 if cation_is_common else present)
+            return (cat ** a) * (an ** b) - ksp
+
+        x = max(ksp / present, 1e-300)
+        for _ in range(200):
+            h = x * 1e-7 + 1e-30
+            d = (f(x + h) - f(x - h)) / (2 * h)
+            if d == 0:
+                break
+            step = f(x) / d
+            x -= step
+            if x < 0:
+                x = 0.0
+            if abs(step) <= 1e-16 * max(x, 1e-300):
+                break
+        out['common'] = dict(symbol=common, c=present, s=x, reduction=s / x,
+                            residual=f(x) / ksp, mass_solubility=x * mass)
+    return out
+
+
+KSP_CASES = [
+    ('AgCl', 1.8e-10, None, None),
+    ('Ca(OH)2', 5.5e-6, None, None),
+    ('PbCl2', 1.7e-5, None, None),
+    ('Ag2CrO4', 1.1e-12, None, None),
+    ('BaSO4', 1.1e-10, None, None),
+    ('Mg(OH)2', 5.6e-12, None, None),
+    ('Ca3(PO4)2', 2.07e-33, None, None),
+    ('Fe(OH)3', 2.79e-39, None, None),
+    ('LiF', 1.8e-3, None, None),
+    ('NH4NO3', 1.0e-3, None, None),
+    # mercury(I) is written Hg2^2+ in solution chemistry and Hg+ in elementary
+    # texts; both readings reconstruct Hg2Cl2, so the tool must be told which.
+    ('Hg2Cl2', 1.3e-18, None, None, 'Hg2^2+', None),
+    ('AgCl', 1.8e-10, 'Cl^-', 0.01),
+    ('AgCl', 1.8e-10, 'Ag^+', 0.01),
+]
+for case in KSP_CASES:
+    salt, ksp, common, common_c = case[:4]
+    force_cation, force_anion = (case[4], case[5]) if len(case) > 4 else (None, None)
+    try:
+        r = ksp_case(salt, ksp, common, common_c, force_cation, force_anion)
+    except ValueError as err:
+        print(f'ksp.{salt}.{ksp!r}.{common}\tERROR {err}')
+        continue
+    slug = f'{salt}_{ksp!r}_{common}'.replace('^', '').replace('(', '').replace(')', '').replace(' ', '')
+    print(f'ksp.{slug}\tcations={r["cation"]}x{r["a"]}\tanions={r["anion"]}x{r["b"]}'
+          f'\tcharge_balance={r["charge_balance"]}\tfactor={r["factor"]!r}\torder={r["order"]}')
+    print(f'ksp.{slug}.s\tmolar_solubility={r["s"]!r}\tmass_solubility={r["mass_solubility"]!r}'
+          f'\tmolar_mass={r["molar_mass"]!r}')
+    print(f'ksp.{slug}.conc\tcat={r["cat_conc"]!r}\tan={r["an_conc"]!r}')
+    if r['common']:
+        c = r['common']
+        print(f'ksp.{slug}.common\ts={c["s"]!r}\treduction={c["reduction"]!r}\tresidual={c["residual"]!r}'
+              f'\tmass_solubility={c["mass_solubility"]!r}')
+
+# ---------------------------------------------------------------------------
 # --check: self-verification. The ruler must be OUTSIDE this file's own maths
 # (published textbook values + definitional identities) — an oracle that only
 # agrees with the implementation would pass even when both are wrong (R63).
@@ -804,6 +969,45 @@ def self_check():
         if not e2 < e1:
             failures.append(f'equilibrium: sqrt(KC) error not decreasing ({c1}: {e1:.3f} %, {c2}: {e2:.3f} %)')
 
+    # --- ksp: published molar solubilities are the ruler, plus the structural
+    # identities (charge balance, Ksp reconstruction, common ion shifts it down)
+    for salt, ksp, want_s in [
+        ('AgCl', 1.8e-10, 1.3e-5),
+        ('Ca(OH)2', 5.5e-6, 1.1e-2),
+        ('PbCl2', 1.7e-5, 1.6e-2),
+        ('Ag2CrO4', 1.1e-12, 6.5e-5),
+        ('BaSO4', 1.1e-10, 1.0e-5),
+        ('Mg(OH)2', 5.6e-12, 1.1e-4),
+    ]:
+        r = ksp_case(salt, ksp)
+        check(f'ksp {salt} molar solubility', r['s'], want_s, want_s * 0.05)
+        if r['charge_balance'] != 0:
+            failures.append(f'ksp {salt}: net charge {r["charge_balance"]} != 0')
+        if abs(r['factor'] * r['s'] ** r['order'] - ksp) > 1e-12 * ksp:
+            failures.append(f'ksp {salt}: factor*s^N = {r["factor"] * r["s"] ** r["order"]!r} != Ksp {ksp!r}')
+    # Hg2Cl2 must be ambiguous BEFORE an ion is forced: both readings reconstruct it
+    hg_all, _ = ksp_groupings('Hg2Cl2')
+    hg_labels = sorted({(f[0], f[2]) for f in hg_all})
+    if hg_labels != [('Hg2^2+', 'Cl^-'), ('Hg^+', 'Cl^-')]:
+        failures.append(f'ksp Hg2Cl2: expected two readings Hg2^2+ / Hg^+, got {hg_labels}')
+    # common ion: exact identity s*(a s + C)^... = Ksp and a strictly smaller s
+    for common, c in [('Cl^-', 0.01), ('Ag^+', 0.01)]:
+        r = ksp_case('AgCl', 1.8e-10, common, c)
+        cm = r['common']
+        if abs(cm['s'] * (cm['s'] + c) - 1.8e-10) > 1e-12 * 1.8e-10:
+            failures.append(f'ksp AgCl + {common}: (s)(s+C) = {cm["s"] * (cm["s"] + c)!r} != Ksp')
+        if not cm['s'] < r['s']:
+            failures.append(f'ksp AgCl + {common}: common ion must lower solubility')
+        if abs(cm['s'] - 1.8e-8) > 0.5e-8:
+            failures.append(f'ksp AgCl + {common}: s = {cm["s"]!r}, published estimate 1.8e-8')
+    # monotonic in Ksp, and the exponent really is a+b
+    lo = ksp_case('Ca3(PO4)2', 2.07e-33)['s']
+    hi = ksp_case('Ca3(PO4)2', 2.07e-30)['s']
+    if not hi > lo:
+        failures.append(f'ksp monotonicity: s did not rise with Ksp ({lo!r} -> {hi!r})')
+    if abs((hi / lo) - 10 ** (3.0 / 5.0)) > 1e-9 * 10 ** (3.0 / 5.0):
+        failures.append(f'ksp Ca3(PO4)2: 1000x Ksp must raise s by 10^(3/5), got {hi / lo!r}')
+
     if failures:
         print('SELF-CHECK FAILED')
         for line in failures:
@@ -812,7 +1016,9 @@ def self_check():
     print('SELF-CHECK OK: 8 published molar masses, 2 textbook balances, R/molar volume, '
           'pH definition, 7 stoichiometry cases (mass conservation + leftover bounds), '
           '6 published compositions (empirical + molecular formulas), '
-          '3 published weak acid/base pH values + x^2/(C-x) == K')
+          '3 published weak acid/base pH values + x^2/(C-x) == K, '
+          '6 published Ksp solubility values + charge balance/Ksp reconstruction + '
+          'Hg2Cl2 two readings + common-ion identity')
     return 0
 
 

@@ -1,7 +1,7 @@
 {
   "name": "dsh-chem",
-  "version": "0.4.0",
-  "description": "Deterministic chemistry math for DeepSeek Harness (dsh): formula parsing with molar mass (nested parens, hydrates, ionic charges), mass/mole/particle conversions, solution concentration (molarity, dilution, percent), pH/pOH/buffer math, exact-rational equation balancing, limiting-reagent stoichiometry, empirical/molecular formulas from elemental analysis and weak acid/base equilibrium (ICE) — zero runtime dependencies",
+  "version": "0.5.0",
+  "description": "Deterministic chemistry math for DeepSeek Harness (dsh): formula parsing with molar mass (nested parens, hydrates, ionic charges), mass/mole/particle conversions, solution concentration (molarity, dilution, percent), pH/pOH/buffer math, exact-rational equation balancing, limiting-reagent stoichiometry, empirical/molecular formulas from elemental analysis, weak acid/base equilibrium (ICE) and solubility products (Ksp to molar solubility, with the ion grouping verified and the common-ion effect solved) — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,7 +33,11 @@
     "elemental-analysis",
     "equilibrium",
     "ice-table",
-    "weak-acid"
+    "weak-acid",
+    "ksp",
+    "solubility",
+    "solubility-product",
+    "common-ion"
   ],
   "license": "MIT",
   "repository": {

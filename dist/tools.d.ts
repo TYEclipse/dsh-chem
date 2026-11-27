@@ -16,6 +16,7 @@ export interface ToolSet {
     stoichiometry: ToolDefinition;
     formula_from_composition: ToolDefinition;
     equilibrium: ToolDefinition;
+    ksp_solubility: ToolDefinition;
 }
 /** Output-facing shape of `stoichiometry` (undefined keys are never emitted). */
 export interface StoichiometryOut {
@@ -196,6 +197,43 @@ export interface EquilibriumOut {
     };
     kFromResult?: number;
     note?: string;
+    error?: string;
+}
+/** Output-facing shape of `ksp_solubility` (undefined keys are never emitted). */
+export interface KspOut {
+    valid: boolean;
+    formula?: string;
+    ksp?: number;
+    pKsp?: number;
+    cation?: {
+        symbol: string;
+        charge: number;
+        count: number;
+        concentration: number;
+    };
+    anion?: {
+        symbol: string;
+        charge: number;
+        count: number;
+        concentration: number;
+    };
+    stoichiometricFactor?: number;
+    ionCount?: number;
+    expression?: string;
+    molarMass?: number;
+    molarSolubility?: number;
+    massSolubility?: number;
+    chargeBalance?: number;
+    commonIon?: {
+        symbol: string;
+        concentration: number;
+        molarSolubility: number;
+        massSolubility: number;
+        reductionFactor: number;
+        residual: number;
+    };
+    notes?: string[];
+    candidates?: string[];
     error?: string;
 }
 export declare function buildChemTools(): ToolSet;
